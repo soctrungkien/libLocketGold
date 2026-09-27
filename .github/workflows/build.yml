@@ -2,10 +2,10 @@ name: Build Native Shared Library
 
 on:
   push:
-    branches: [ "*" ] # Chạy tự động mỗi khi push/sửa code ở bất kỳ branch nào
+    branches: [ "*" ]
   pull_request:
-    branches: [ "*" ] # Chạy khi tạo hoặc cập nhật Pull Request
-  workflow_dispatch:  # Cho phép bấm nút "Run workflow" thủ công trên GitHub UI
+    branches: [ "*" ]
+  workflow_dispatch:
 
 jobs:
   build-arm64:
@@ -15,11 +15,16 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      # Sử dụng NDK Action hợp lệ từ GitHub Marketplace
-      - name: Setup Android NDK
-        uses: nkmr-jp/setup-ndk-action@v1
-        with:
-          ndk-version: r26b
+      # Tận dụng NDK đã cài sẵn trên GitHub Runner (không phụ thuộc Action bên thứ 3)
+      - name: Setup Android NDK (Pre-installed)
+        run: |
+          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* 2>/dev/null | tail -n 1)
+          if [ -z "$NDK_PATH" ]; then
+            NDK_PATH=$(ls -d $ANDROID_SDK_ROOT/ndk/* 2>/dev/null | tail -n 1)
+          fi
+          echo "Using Android NDK from: $NDK_PATH"
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> $GITHUB_ENV
 
       - name: Setup Xmake
         uses: xmake-io/github-action-setup-xmake@v1
