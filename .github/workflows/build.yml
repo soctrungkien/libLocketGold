@@ -15,8 +15,9 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
+      # Sử dụng NDK Action hợp lệ từ GitHub Marketplace
       - name: Setup Android NDK
-        uses: nsetup/setup-ndk@v3
+        uses: nkmr-jp/setup-ndk-action@v1
         with:
           ndk-version: r26b
 
@@ -33,8 +34,6 @@ jobs:
       - name: Upload Artifact (.so)
         uses: actions/upload-artifact@v4
         with:
-          name: libLocketGold
+          name: libLocketGold-arm64-v8a
           path: build/android/arm64-v8a/release/libLocketGold.so
           if-no-files-found: error
-
-          
