@@ -3,7 +3,7 @@ add_rules("mode.debug", "mode.release")
 -- Khai báo package Dobby Hook từ xmake repository
 add_requires("dobby")
 
-target("locket_gold_native")
+target("LocketGold")
     set_kind("shared")
     set_plat("android")
     set_archs("arm64-v8a")
