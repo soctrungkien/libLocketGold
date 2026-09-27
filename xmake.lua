@@ -6,7 +6,7 @@ add_requires("dobby")
 target("LocketGold")
     set_kind("shared")
     set_plat("android")
-    set_archs("arm64-v8a")
+    set_arch("arm64-v8a")
 
     -- Thêm dependency Dobby
     add_packages("dobby")
