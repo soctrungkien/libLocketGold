@@ -1,10 +1,12 @@
-name: Build Native Shared Library
+name: Build Native Shared Libraries
 
 on:
   push:
-    branches: [ "*" ]
+    branches:
+      - "*"
   pull_request:
-    branches: [ "*" ]
+    branches:
+      - "*"
   workflow_dispatch:
 
 jobs:
@@ -15,30 +17,125 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      # Tận dụng NDK đã cài sẵn trên GitHub Runner (không phụ thuộc Action bên thứ 3)
-      - name: Setup Android NDK (Pre-installed)
+      - name: Setup Android NDK
+        shell: bash
         run: |
-          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* 2>/dev/null | tail -n 1)
-          if [ -z "$NDK_PATH" ]; then
-            NDK_PATH=$(ls -d $ANDROID_SDK_ROOT/ndk/* 2>/dev/null | tail -n 1)
+          set -e
+
+          NDK_PATH=""
+
+          if [ -n "${ANDROID_NDK_LATEST_HOME:-}" ] && [ -d "$ANDROID_NDK_LATEST_HOME" ]; then
+            NDK_PATH="$ANDROID_NDK_LATEST_HOME"
           fi
-          echo "Using Android NDK from: $NDK_PATH"
-          echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
-          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> $GITHUB_ENV
+
+          if [ -z "$NDK_PATH" ] && [ -d "$ANDROID_HOME/ndk" ]; then
+            NDK_PATH=$(find "$ANDROID_HOME/ndk" \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -type d | sort -V | tail -n 1)
+          fi
+
+          if [ -z "$NDK_PATH" ] && [ -d "$ANDROID_SDK_ROOT/ndk" ]; then
+            NDK_PATH=$(find "$ANDROID_SDK_ROOT/ndk" \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -type d | sort -V | tail -n 1)
+          fi
+
+          if [ -z "$NDK_PATH" ] || [ ! -d "$NDK_PATH" ]; then
+            echo "Android NDK not found"
+            exit 1
+          fi
+
+          echo "Using Android NDK: $NDK_PATH"
+
+          echo "ANDROID_NDK=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
 
       - name: Setup Xmake
         uses: xmake-io/github-action-setup-xmake@v1
         with:
           xmake-version: latest
 
-      - name: Build shared library (.so)
+      - name: Show build environment
         run: |
-          xmake config --plat=android --arch=arm64-v8a --mode=release --yes
-          xmake -v
+          xmake --version
+          echo "ANDROID_NDK=$ANDROID_NDK"
 
-      - name: Upload Artifact (.so)
+      - name: Configure Xmake
+        run: |
+          xmake config \
+            --plat=android \
+            --arch=arm64-v8a \
+            --mode=release \
+            --yes
+
+      - name: Build ARM64 libraries
+        run: |
+          xmake build -v
+
+      - name: Find both shared libraries
+        shell: bash
+        run: |
+          set -e
+
+          echo "Generated .so files:"
+          find build -type f -name "*.so" -print
+
+          GOLD=$(find build -type f -name "liblocket_gold.so" | head -n 1)
+          LOADER=$(find build -type f -name "liblocket_loader.so" | head -n 1)
+
+          if [ -z "$GOLD" ]; then
+            echo "ERROR: liblocket_gold.so was not found."
+            exit 1
+          fi
+
+          if [ -z "$LOADER" ]; then
+            echo "ERROR: liblocket_loader.so was not found."
+            exit 1
+          fi
+
+          echo "GOLD_PATH=$GOLD" >> "$GITHUB_ENV"
+          echo "LOADER_PATH=$LOADER" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "liblocket_gold.so:"
+          echo "$GOLD"
+
+          echo ""
+          echo "liblocket_loader.so:"
+          echo "$LOADER"
+
+      - name: Verify libraries
+        run: |
+          file "$GOLD_PATH"
+          file "$LOADER_PATH"
+
+          echo ""
+          ls -lh "$GOLD_PATH"
+          ls -lh "$LOADER_PATH"
+
+      - name: Prepare artifacts
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p artifact
+
+          cp "$GOLD_PATH" \
+            artifact/liblocket_gold-arm64-v8a.so
+
+          cp "$LOADER_PATH" \
+            artifact/liblocket_loader-arm64-v8a.so
+
+          echo "Prepared files:"
+          ls -lh artifact/
+
+      - name: Upload ARM64 libraries
         uses: actions/upload-artifact@v4
         with:
-          name: libLocketGold-arm64-v8a
-          path: build/android/arm64-v8a/release/libLocketGold.so
+          name: locket-gold-arm64-v8a
+          path: artifact/
           if-no-files-found: error
+          retention-days: 30
