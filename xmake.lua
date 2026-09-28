@@ -116,7 +116,7 @@ target("locket_gold")
 target("locket_loader")
     set_kind("shared")
     set_filename("liblocket_loader.so")
-    set_dependenceof("locket_gold")
+    add_deps("locket_gold")
     
     add_files("src/jni_loader.cpp")
     add_includedirs("include", "$(env:ANDROID_NDK)/sysroot/usr/include")
