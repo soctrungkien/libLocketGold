@@ -90,7 +90,7 @@ target("locket_gold")
     add_includedirs("include", "$(env:ANDROID_NDK)/sysroot/usr/include")
     
     -- Dobby integration
-    local dobby_dir = download_dobby()
+    local dobby_dir = "dobby"
     add_includedirs(path.join(dobby_dir, "include"))
     add_linkdirs(path.join(dobby_dir, "lib/arm64-v8a"))
     add_links("dobby")
