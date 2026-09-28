@@ -12,7 +12,7 @@ set_allowedplats("android")
 set_allowedarchs("arm64-v8a")
 
 -- Default mode (release recommended for library)
-set_default_mode("release")
+set_defaultmode("release")
 
 -- Global optimization flags
 add_cflags("-O3", "-fvisibility=hidden")
