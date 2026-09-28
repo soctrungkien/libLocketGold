@@ -22,19 +22,48 @@ add_ldflags("-s")  -- Strip symbols in release
 -- Include Dobby and common headers
 set_languages("c17", "cxx17")
 
-includes("dobby")
+local dobby_dir = "dobby"
 
--- ==================== DEPENDENCIES ====================
+target("locket_gold")
+    set_kind("shared")
+    set_filename("liblocket_gold.so")
 
--- Download/find Dobby hook framework
-function download_dobby()
-    local dobby_dir = path.join(os.getenv("XMAKE_GLOBALDIR"), "dobby")
-    if not os.exists(dobby_dir) then
-        print("Downloading Dobby...")
-        os.exec("git clone --depth=1 https://github.com/jmpews/Dobby " .. dobby_dir)
-    end
-    return dobby_dir
-end
+    add_files(
+        "src/main.cpp",
+        "src/hermes_patcher.cpp",
+        "src/hook_manager.cpp",
+        "src/firestore_hook.cpp",
+        "src/firebase_config_hook.cpp",
+        "src/mmkv_hook.cpp",
+        "src/networking_hook.cpp",
+        "src/revenuecat_hook.cpp",
+        "src/user_data_mutator.cpp",
+        "src/json_utils.cpp",
+        "src/log_util.cpp"
+    )
+
+    add_includedirs(
+        "include",
+        path.join(dobby_dir, "include")
+    )
+
+    add_linkdirs(
+        path.join(dobby_dir, "lib", "arm64-v8a")
+    )
+
+    add_links("dobby")
+    add_links("log", "android")
+
+    set_symbols("hidden")
+    set_warnings("all")
+
+    on_load(function(target)
+        if not os.getenv("ANDROID_NDK") then
+            raise("ANDROID_NDK environment variable not set")
+        end
+
+        target:add("ldflags", "-fPIC")
+    end)
 
 -- ==================== MAIN LIBRARY TARGET ====================
 
