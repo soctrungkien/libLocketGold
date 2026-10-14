@@ -21,7 +21,7 @@ jobs:
 
       - name: Build
         run: |
-          xmake f -p android -a arm64-v8a --ndk=$ANDROID_NDK_HOME
+          xmake f -p android -a arm64-v8a --ndk=$ANDROID_NDK_HOME --yes
           xmake -y
 
       - name: Upload
