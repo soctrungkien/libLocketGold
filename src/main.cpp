@@ -15,20 +15,121 @@
 static constexpr uint32_t HERMES_VERSION = 96;
 static constexpr uint32_t HERMES_MAGIC = 0x03BC1FC6;
 
+// Minimal SHA-1 implementation for updating bundle hash
+namespace sha1 {
+    typedef struct {
+        uint32_t state[5];
+        uint32_t count[2];
+        uint8_t buffer[64];
+    } context;
+
+    static void transform(uint32_t state[5], const uint8_t buffer[64]) {
+        uint32_t a = state[0], b = state[1], c = state[2], d = state[3], e = state[4], t;
+        uint32_t w[80];
+        for (int i = 0; i < 16; i++) {
+            w[i] = ((uint32_t)buffer[i*4] << 24) | ((uint32_t)buffer[i*4+1] << 16) |
+                   ((uint32_t)buffer[i*4+2] << 8) | (uint32_t)buffer[i*4+3];
+        }
+        for (int i = 16; i < 80; i++) {
+            t = w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16];
+            w[i] = (t << 1) | (t >> 31);
+        }
+        #define rol(value, bits) (((value) << (bits)) | ((value) >> (32 - (bits))))
+        #define blk(i) (t = w[i&15] ^= w[(i-14)&15] ^= w[(i-8)&15] ^= w[(i-3)&15], (t << 1) | (t >> 31))
+        #define r0(v,w,x,y,z,i) z += ((w & (x ^ y)) ^ y) + w[i] + 0x5A827999 + rol(v, 5); w = rol(w, 30);
+        #define r1(v,w,x,y,z,i) z += ((w & (x ^ y)) ^ y) + blk(i) + 0x5A827999 + rol(v, 5); w = rol(w, 30);
+        #define r2(v,w,x,y,z,i) z += (w ^ x ^ y) + blk(i) + 0x6ED9EBA1 + rol(v, 5); w = rol(w, 30);
+        #define r3(v,w,x,y,z,i) z += (((w | x) & y) | (w & x)) + blk(i) + 0x8F1BBCDC + rol(v, 5); w = rol(w, 30);
+        #define r4(v,w,x,y,z,i) z += (w ^ x ^ y) + blk(i) + 0xCA62C1D6 + rol(v, 5); w = rol(w, 30);
+
+        int i = 0;
+        while (i < 20) { r0(a,b,c,d,e,i++); r0(e,a,b,c,d,i++); r0(d,e,a,b,c,i++); r0(c,d,e,a,b,i++); r0(b,c,d,e,a,i++); }
+        while (i < 40) { r2(a,b,c,d,e,i++); r2(e,a,b,c,d,i++); r2(d,e,a,b,c,i++); r2(c,d,e,a,b,i++); r2(b,c,d,e,a,i++); }
+        while (i < 60) { r3(a,b,c,d,e,i++); r3(e,a,b,c,d,i++); r3(d,e,a,b,c,i++); r3(c,d,e,a,b,i++); r3(b,c,d,e,a,i++); }
+        while (i < 80) { r4(a,b,c,d,e,i++); r4(e,a,b,c,d,i++); r4(d,e,a,b,c,i++); r4(c,d,e,a,b,i++); r4(b,c,d,e,a,i++); }
+
+        state[0] += a; state[1] += b; state[2] += c; state[3] += d; state[4] += e;
+        #undef rol
+        #undef blk
+        #undef r0
+        #undef r1
+        #undef r2
+        #undef r3
+        #undef r4
+    }
+
+    static void init(context* context) {
+        context->state[0] = 0x67452301;
+        context->state[1] = 0xEFCDAB89;
+        context->state[2] = 0x98BADCFE;
+        context->state[3] = 0x10325476;
+        context->state[4] = 0xC3D2E1F0;
+        context->count[0] = context->count[1] = 0;
+    }
+
+    static void update(context* context, const uint8_t* data, size_t len) {
+        size_t i, j;
+        j = (context->count[0] >> 3) & 63;
+        if ((context->count[0] += (uint32_t)len << 3) < ((uint32_t)len << 3)) context->count[1]++;
+        context->count[1] += (uint32_t)(len >> 29);
+        if ((j + len) > 63) {
+            std::memcpy(&context->buffer[j], data, (i = 64 - j));
+            transform(context->state, context->buffer);
+            for (; i + 63 < len; i += 64) transform(context->state, &data[i]);
+            j = 0;
+        } else i = 0;
+        std::memcpy(&context->buffer[j], &data[i], len - i);
+    }
+
+    static void final(uint8_t digest[20], context* context) {
+        uint32_t i;
+        uint8_t finalcount[8];
+        for (i = 0; i < 8; i++) {
+            finalcount[i] = (unsigned char)((context->count[(i >= 4 ? 0 : 1)] >> ((3 - (i & 3)) * 8)) & 255);
+        }
+        update(context, (uint8_t*)"\x80", 1);
+        while ((context->count[0] & 504) != 448) update(context, (uint8_t*)"\0", 1);
+        update(context, finalcount, 8);
+        for (i = 0; i < 20; i++) {
+            digest[i] = (unsigned char)((context->state[i >> 2] >> ((3 - (i & 3)) * 8)) & 255);
+        }
+    }
+}
+
+static size_t get_page_size() {
+    return sysconf(_SC_PAGESIZE);
+}
+
 static bool unprotect(void* addr, size_t len) {
-    uintptr_t page = (uintptr_t)addr & \~(getpagesize() - 1);
-    size_t size = ((uintptr_t)addr + len - page + getpagesize() - 1) & \~(getpagesize() - 1);
+    size_t page_size = get_page_size();
+    uintptr_t page = (uintptr_t)addr & ~(page_size - 1);
+    size_t size = ((uintptr_t)addr + len - page + page_size - 1) & ~(page_size - 1);
     return mprotect((void*)page, size, PROT_READ | PROT_WRITE | PROT_EXEC) == 0;
 }
 
 static bool protect(void* addr, size_t len) {
-    uintptr_t page = (uintptr_t)addr & \~(getpagesize() - 1);
-    size_t size = ((uintptr_t)addr + len - page + getpagesize() - 1) & \~(getpagesize() - 1);
+    size_t page_size = get_page_size();
+    uintptr_t page = (uintptr_t)addr & ~(page_size - 1);
+    size_t size = ((uintptr_t)addr + len - page + page_size - 1) & ~(page_size - 1);
     return mprotect((void*)page, size, PROT_READ | PROT_EXEC) == 0;
 }
 
+struct ScopedProtect {
+    void* addr;
+    size_t len;
+    bool success;
+    ScopedProtect(void* p, size_t l) : addr(p), len(l) {
+        success = unprotect(addr, len);
+    }
+    ~ScopedProtect() {
+        if (success) {
+            protect(addr, len);
+        }
+    }
+};
+
 static uint32_t align(uint32_t total, uint32_t alignment, uint32_t pos) {
-    uint32_t aligned = (pos + alignment - 1) & \~(alignment - 1);
+    uint32_t aligned = (pos + alignment - 1) & ~(alignment - 1);
     if (aligned > total) return 0x7FFFFFFE;
     return aligned;
 }
@@ -50,6 +151,7 @@ static StringInfo get_string_info(const uint8_t* data, size_t size,
                                   uint32_t storage, uint32_t str_count, uint32_t idx) {
     StringInfo info{0, 0, false};
     if (idx >= str_count) return info;
+    if (small_tbl + idx * 4 + 4 > size) return info;
 
     uint32_t entry = *(uint32_t*)(data + small_tbl + idx * 4);
     bool is_utf16 = entry & 1;
@@ -62,12 +164,14 @@ static StringInfo get_string_info(const uint8_t* data, size_t size,
     uint32_t length = (entry >> 24) & 0xFF;
 
     if (length == 0xFF) {
+        if (overflow_tbl + off * 8 + 8 > size) return info;
         uint32_t ov = *(uint32_t*)(data + overflow_tbl + off * 8);
         length = *(uint32_t*)(data + overflow_tbl + off * 8 + 4);
         info.abs_pos = storage + ov;
     } else {
         info.abs_pos = storage + off;
     }
+    if (info.abs_pos + length > size) return info;
     info.length = length;
     return info;
 }
@@ -129,6 +233,7 @@ static bool patch_bundle(uint8_t* data, size_t size) {
 
     for (uint32_t i = 0; i < function_count; i++) {
         uint32_t base = headers_start + i * 16;
+        if (base + 16 > size) continue;
         uint32_t w1 = *(uint32_t*)(data + base + 4);
         if (((data[base + 15] >> 4) & 1) != 0) continue;
 
@@ -140,6 +245,7 @@ static bool patch_bundle(uint8_t* data, size_t size) {
 
         uint32_t offset = *(uint32_t*)(data + base) & 0x1FFFFFF;
         uint32_t fsize  = w1 & 0x7FFF;
+        if (offset + fsize > size) continue;
 
         if (badge_off < 0 && info.length == 20 && region_eq(data, size, info.abs_pos, "doesUserHaveGoldBadge")) {
             badge_off = offset; badge_size = fsize;
@@ -163,20 +269,23 @@ static bool patch_bundle(uint8_t* data, size_t size) {
     }
 
     // 3. patch badge
-    if (badge_size < 4 || data[badge_off + badge_size - 2] != 0x5C) {
+    if (badge_size < 4 || badge_off + badge_size > size || data[badge_off + badge_size - 2] != 0x5C) {
         LOGE("badge structure invalid");
         return false;
     }
     uint8_t ret_reg = data[badge_off + badge_size - 1];
-    if (!unprotect(data + badge_off, 4)) return false;
-    data[badge_off + 0] = 0x78;
-    data[badge_off + 1] = ret_reg;
-    data[badge_off + 2] = 0x5C;
-    data[badge_off + 3] = ret_reg;
-    protect(data + badge_off, 4);
+    {
+        ScopedProtect sp(data + badge_off, 4);
+        if (!sp.success) return false;
+        data[badge_off + 0] = 0x78;
+        data[badge_off + 1] = ret_reg;
+        data[badge_off + 2] = 0x5C;
+        data[badge_off + 3] = ret_reg;
+    }
     LOGI("badge patched (reg=%u)", ret_reg);
 
     // 4. patch PaymentsProvider
+    if (pay_off + pay_size > size) return false;
     uint8_t id_le[2] = {(uint8_t)(ent_id & 0xFF), (uint8_t)((ent_id >> 8) & 0xFF)};
     bool patched_pay = false;
     for (int i = 0; i < pay_size - 12; i++) {
@@ -190,14 +299,14 @@ static bool patch_bundle(uint8_t* data, size_t size) {
             uint8_t d2 = data[pay_off + i + 10];
             uint32_t at = pay_off + i + 6;
 
-            if (!unprotect(data + at, 6)) return false;
+            ScopedProtect sp(data + at, 6);
+            if (!sp.success) return false;
             data[at + 0] = 0x78;
             data[at + 1] = d2;
             data[at + 2] = 0x79;
             data[at + 3] = d1;
             data[at + 4] = 0x78;
             data[at + 5] = d2;
-            protect(data + at, 6);
             LOGI("PaymentsProvider patched @ %u", at);
             patched_pay = true;
             break;
@@ -208,7 +317,7 @@ static bool patch_bundle(uint8_t* data, size_t size) {
         return false;
     }
 
-    // 5. patch duration
+    // 5. patch duration (int32, float, double markers like Python)
     uint32_t candidates[][2] = {{2500, 2147000000}, {10000, 2147000000}};
     int patched = 0;
 
@@ -220,15 +329,24 @@ static bool patch_bundle(uint8_t* data, size_t size) {
             bool near = false;
             for (int k = -64; k < 64; k++) {
                 if ((int)idx + k < 0 || idx + k + 4 > size) continue;
-                if (*(uint32_t*)(data + idx + k) == 720) {
+                uint32_t val32 = *(uint32_t*)(data + idx + k);
+                float val_f = *(float*)(data + idx + k);
+                if (val32 == 720 || val_f == 720.0f) {
                     near = true;
                     break;
                 }
+                if (idx + k + 8 <= size) {
+                    double val_d = *(double*)(data + idx + k);
+                    if (val_d == 720.0) {
+                        near = true;
+                        break;
+                    }
+                }
             }
             if (near) {
-                if (unprotect(data + idx, 4)) {
+                ScopedProtect sp(data + idx, 4);
+                if (sp.success) {
                     *(uint32_t*)(data + idx) = new_v;
-                    protect(data + idx, 4);
                     patched++;
                     LOGI("duration %u → %u @ %zu", old_v, new_v, idx);
                 }
@@ -242,12 +360,27 @@ static bool patch_bundle(uint8_t* data, size_t size) {
         auto info = get_string_info(data, size, small_string_table_pos, overflow_table_pos, storage_pos, string_count, i);
         if (info.is_utf16 || info.length == 0) continue;
         if (info.length == 31 && region_eq(data, size, info.abs_pos, "android_camera_video_recording")) {
-            if (unprotect(data + info.abs_pos, info.length)) {
+            ScopedProtect sp(data + info.abs_pos, info.length);
+            if (sp.success) {
                 memset(data + info.abs_pos, 0, info.length);
-                protect(data + info.abs_pos, info.length);
                 LOGI("camera string nulled @ %u", info.abs_pos);
             }
             break;
+        }
+    }
+
+    // 7. Update SHA1 (last 20 bytes)
+    if (size >= 20) {
+        sha1::context ctx;
+        sha1::init(&ctx);
+        sha1::update(&ctx, data, size - 20);
+        uint8_t digest[20];
+        sha1::final(digest, &ctx);
+
+        ScopedProtect sp(data + size - 20, 20);
+        if (sp.success) {
+            std::memcpy(data + size - 20, digest, 20);
+            LOGI("SHA1 updated");
         }
     }
 
@@ -291,16 +424,9 @@ static void do_patch() {
     }
     LOGI("Hermes bundle @ %p size=%zu", bundle, size);
 
-    if (!unprotect(bundle, size)) {
-        LOGE("unprotect failed");
-        return;
+    if (!patch_bundle(bundle, size)) {
+        LOGE("Patch failed");
     }
-
-    bool ok = patch_bundle(bundle, size);
-    protect(bundle, size);
-
-    if (ok) LOGI("All features patched");
-    else LOGE("Patch failed");
 }
 
 extern "C" JNIEXPORT jint JNICALL
