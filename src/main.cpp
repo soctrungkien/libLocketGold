@@ -138,11 +138,14 @@ static bool get_string_info(const uint8_t* data, size_t data_len, size_t small_s
 
 // --- Patch Bundle Logic ---
 static bool patch_bundle_buffer(std::vector<uint8_t>& data) {
-    if (data.size() < 64) return false;
+    if (data.size() < 64) {
+        LOGE("[-] Data size too small: %zu", data.size());
+        return false;
+    }
 
     uint32_t version = *reinterpret_cast<uint32_t*>(data.data() + 8);
     if (version != HERMES_VERSION) {
-        LOGW("Hermes version %u != %u", version, HERMES_VERSION);
+        LOGW("[!] Cảnh báo: Hermes version %u != %u", version, HERMES_VERSION);
     }
 
     uint32_t function_count = *reinterpret_cast<uint32_t*>(data.data() + 40);
@@ -151,6 +154,8 @@ static bool patch_bundle_buffer(std::vector<uint8_t>& data) {
     uint32_t string_count = *reinterpret_cast<uint32_t*>(data.data() + 52);
     uint32_t overflow_count = *reinterpret_cast<uint32_t*>(data.data() + 56);
     uint32_t string_storage_size = *reinterpret_cast<uint32_t*>(data.data() + 60);
+
+    LOGI("[*] functions=%u, strings=%u", function_count, string_count);
 
     size_t p = align_val(data.size(), 32, 111);
     size_t headers_start = p;
@@ -163,7 +168,10 @@ static bool patch_bundle_buffer(std::vector<uint8_t>& data) {
     p = align_val(data.size(), 4, p + overflow_count * 8);
     size_t storage_pos = p;
 
-    if (p + string_storage_size > data.size()) return false;
+    if (p + string_storage_size > data.size()) {
+        LOGE("[-] string storage vượt size: p=%zu, storage_size=%u, total=%zu", p, string_storage_size, data.size());
+        return false;
+    }
 
     // 1. entitlement
     int ent_id = -1;
@@ -174,11 +182,15 @@ static bool patch_bundle_buffer(std::vector<uint8_t>& data) {
             if (is_utf16) continue;
             if (length == std::strlen(STR_ENTITLEMENT) && region_equals_ascii(data.data(), data.size(), abs_pos, STR_ENTITLEMENT, length)) {
                 ent_id = i;
+                LOGI("[+] entitlement id=%d", ent_id);
                 break;
             }
         }
     }
-    if (ent_id < 0) return false;
+    if (ent_id < 0) {
+        LOGE("[-] Không tìm thấy entitlement string");
+        return false;
+    }
 
     // 2. scan functions
     size_t badge_offset = (size_t)-1, badge_size = 0;
@@ -202,24 +214,34 @@ static bool patch_bundle_buffer(std::vector<uint8_t>& data) {
 
             if (badge_offset == (size_t)-1 && length == std::strlen(FN_BADGE) && region_equals_ascii(data.data(), data.size(), abs_pos, FN_BADGE, length)) {
                 badge_offset = offset; badge_size = size_fn;
+                LOGI("[+] doesUserHaveGoldBadge @ %zu", badge_offset);
             } else if (payments_offset == (size_t)-1 && length == std::strlen(FN_PAYMENTS) && region_equals_ascii(data.data(), data.size(), abs_pos, FN_PAYMENTS, length)) {
                 payments_offset = offset; payments_size = size_fn;
+                LOGI("[+] PaymentsProvider @ %zu", payments_offset);
             } else if (camera_offset == (size_t)-1 && length == std::strlen(FN_CAMERA) && region_equals_ascii(data.data(), data.size(), abs_pos, FN_CAMERA, length)) {
                 camera_offset = offset; camera_size = size_fn;
+                LOGI("[+] getAndroidCameraVideoRecordingConfig @ %zu", camera_offset);
             }
         }
         if (badge_offset != (size_t)-1 && payments_offset != (size_t)-1 && camera_offset != (size_t)-1) break;
     }
 
-    if (badge_offset == (size_t)-1 || payments_offset == (size_t)-1) return false;
+    if (badge_offset == (size_t)-1 || payments_offset == (size_t)-1) {
+        LOGE("[-] Thiếu hàm badge (%zu) hoặc payments (%zu)", badge_offset, payments_offset);
+        return false;
+    }
 
     // 3. patch badge
-    if (badge_size < 4 || badge_offset + badge_size > data.size() || data[badge_offset + badge_size - 2] != 0x5C) return false;
+    if (badge_size < 4 || badge_offset + badge_size > data.size() || data[badge_offset + badge_size - 2] != 0x5C) {
+        LOGE("[-] Cấu trúc badge lỗi: size=%zu, offset=%zu", badge_size, badge_offset);
+        return false;
+    }
     uint8_t ret_reg = data[badge_offset + badge_size - 1];
     data[badge_offset] = 0x78;
     data[badge_offset + 1] = ret_reg;
     data[badge_offset + 2] = 0x5C;
     data[badge_offset + 3] = ret_reg;
+    LOGI("[+] Badge patched successfully");
 
     // 4. patch payments
     uint16_t id_le = static_cast<uint16_t>(ent_id);
@@ -231,16 +253,20 @@ static bool patch_bundle_buffer(std::vector<uint8_t>& data) {
             if (val == id_le && data[pos + 6] == 0x0B && data[pos + 7] == data[pos + 8] &&
                 data[pos + 9] == 0x0B && data[pos + 11] == data[pos + 7]) {
                 uint8_t d1 = data[pos + 7], d2 = data[pos + 10];
-                size_t at = pos + 6;
+                size_t at = payments_offset + i + 6;
                 data[at] = 0x78; data[at+1] = d2;
                 data[at+2] = 0x79; data[at+3] = d1;
                 data[at+4] = 0x78; data[at+5] = d2;
+                LOGI("[+] PaymentsProvider patched @ %zu", at);
                 patched_pay = true;
                 break;
             }
         }
     }
-    if (!patched_pay) return false;
+    if (!patched_pay) {
+        LOGE("[-] Không tìm thấy pattern PaymentsProvider");
+        return false;
+    }
 
     // 5. patch duration
     uint32_t candidates[] = {2500, 10000};
