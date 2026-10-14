@@ -2,14 +2,14 @@ set_project("LocketGold")
 set_version("1.0.0")
 
 add_rules("mode.release", "mode.debug")
-add_requires("dobby") 
+add_requires("dobby")
 
 target("LocketGold")
     set_kind("shared")
     set_languages("c++17")
     add_files("src/main.cpp")
     add_packages("dobby")
-    add_syslinks("log", "dl")
+    add_syslinks("log", "dl", "pthread") -- Thêm pthread ở đây
     set_arch("arm64-v8a")
     set_plat("android")
     set_toolchains("ndk")
