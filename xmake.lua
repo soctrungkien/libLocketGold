@@ -2,7 +2,7 @@ set_project("LocketGold")
 set_version("1.0.0")
 
 add_rules("mode.release", "mode.debug")
-add_requires("dobby", {system = false})
+add_requires("dobby") 
 
 target("LocketGold")
     set_kind("shared")
