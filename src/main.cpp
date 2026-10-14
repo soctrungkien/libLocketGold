@@ -81,12 +81,12 @@ static bool patch_bundle(uint8_t* data, size_t size) {
         LOGI("Hermes version %u (expected %u)", version, HERMES_VERSION);
     }
 
-    uint32_t function_count     = *(uint32_t*)(data + 40);
-    uint32_t string_kind_count  = *(uint32_t*)(data + 44);
-    uint32_t identifier_count   = *(uint32_t*)(data + 48);
-    uint32_t string_count       = *(uint32_t*)(data + 52);
-    uint32_t overflow_count     = *(uint32_t*)(data + 56);
-    uint32_t string_storage_size= *(uint32_t*)(data + 60);
+    uint32_t function_count      = *(uint32_t*)(data + 40);
+    uint32_t string_kind_count   = *(uint32_t*)(data + 44);
+    uint32_t identifier_count    = *(uint32_t*)(data + 48);
+    uint32_t string_count        = *(uint32_t*)(data + 52);
+    uint32_t overflow_count      = *(uint32_t*)(data + 56);
+    uint32_t string_storage_size = *(uint32_t*)(data + 60);
 
     LOGI("functions=%u strings=%u", function_count, string_count);
 
@@ -106,7 +106,7 @@ static bool patch_bundle(uint8_t* data, size_t size) {
         return false;
     }
 
-    // 1. tìm subscription_entitlement
+    // 1. subscription_entitlement
     int32_t ent_id = -1;
     for (uint32_t i = 0; i < string_count; i++) {
         auto info = get_string_info(data, size, small_string_table_pos, overflow_table_pos, storage_pos, string_count, i);
@@ -122,7 +122,7 @@ static bool patch_bundle(uint8_t* data, size_t size) {
         return false;
     }
 
-    // 2. tìm 3 hàm
+    // 2. tìm hàm
     int32_t badge_off = -1, badge_size = -1;
     int32_t pay_off = -1, pay_size = -1;
     int32_t cam_off = -1, cam_size = -1;
@@ -162,7 +162,7 @@ static bool patch_bundle(uint8_t* data, size_t size) {
         return false;
     }
 
-    // 3. patch badge → force true
+    // 3. patch badge
     if (badge_size < 4 || data[badge_off + badge_size - 2] != 0x5C) {
         LOGE("badge structure invalid");
         return false;
@@ -210,7 +210,6 @@ static bool patch_bundle(uint8_t* data, size_t size) {
 
     // 5. patch duration
     uint32_t candidates[][2] = {{2500, 2147000000}, {10000, 2147000000}};
-    uint32_t size_markers[] = {720};
     int patched = 0;
 
     for (auto& c : candidates) {
@@ -252,34 +251,27 @@ static bool patch_bundle(uint8_t* data, size_t size) {
         }
     }
 
-    // 7. update SHA1 (last 20 bytes)
-    // (bỏ qua nếu không cần, vì runtime không check)
-
     LOGI("Full patch done");
     return true;
 }
 
-// Tìm Hermes bundle trong memory
 static void* find_hermes_bundle(size_t* out_size) {
     std::ifstream maps("/proc/self/maps");
     std::string line;
     while (std::getline(maps, line)) {
-        // Tìm vùng r-xp hoặc r--p có size lớn
         uintptr_t start = 0, end = 0;
         char perms[8] = {};
         if (sscanf(line.c_str(), "%lx-%lx %7s", &start, &end, perms) != 3) continue;
         if (perms[0] != 'r') continue;
 
         size_t sz = end - start;
-        if (sz < 0x100000 || sz > 0x20000000) continue; // 1MB \~ 512MB
+        if (sz < 0x100000 || sz > 0x20000000) continue;
 
         uint8_t* p = (uint8_t*)start;
-        // Check magic
         if (*(uint32_t*)p == HERMES_MAGIC) {
             *out_size = sz;
             return p;
         }
-        // Đôi khi magic nằm sâu hơn
         for (size_t off = 0; off + 4 < sz && off < 0x100000; off += 0x1000) {
             if (*(uint32_t*)(p + off) == HERMES_MAGIC) {
                 *out_size = sz - off;
@@ -313,7 +305,7 @@ static void do_patch() {
 
 extern "C" JNIEXPORT jint JNICALL
 JNI_OnLoad(JavaVM* vm, void* reserved) {
-    LOGI("Loaded");
+    LOGI("LocketGold loaded");
     do_patch();
     return JNI_VERSION_1_6;
 }
