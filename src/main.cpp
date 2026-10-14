@@ -7,6 +7,7 @@
 #include <vector>
 #include <fstream>
 #include <string>
+#include <pthread.h>
 #include "dobby.h" // Thêm header của Dobby Hook
 
 #define LOG_TAG "LocketGold"
