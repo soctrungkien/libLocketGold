@@ -440,15 +440,15 @@ static void* find_hermes_bundle(size_t* out_size) {
 }
 
 static void do_patch() {
-    std::thread([]() {
+    pthread_t thread;
+    pthread_create(&thread, nullptr, [](void*) -> void* {
         size_t size = 0;
         uint8_t* bundle = nullptr;
         
-        // Loop chờ đến khi Hermes bundle xuất hiện trong memory
         while (!bundle) {
             bundle = (uint8_t*)find_hermes_bundle(&size);
             if (!bundle) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                usleep(50000); // Ngủ 50ms rồi quét lại
             }
         }
         
@@ -459,12 +459,15 @@ static void do_patch() {
         } else {
             LOGI("All features patched successfully");
         }
-    }).detach();
+        return nullptr;
+    }, nullptr);
+    
+    pthread_detach(thread);
 }
 
 extern "C" JNIEXPORT jint JNICALL
 JNI_OnLoad(JavaVM* vm, void* reserved) {
-    LOGI("LocketGold loaded with Dobby");
+    LOGI("LocketGold loaded, waiting for bundle...");
     do_patch();
     return JNI_VERSION_1_6;
 }
