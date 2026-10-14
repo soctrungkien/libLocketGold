@@ -7,6 +7,7 @@
 #include <vector>
 #include <fstream>
 #include <string>
+#include "dobby.h" // Thêm header của Dobby Hook
 
 #define LOG_TAG "LocketGold"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -439,23 +440,31 @@ static void* find_hermes_bundle(size_t* out_size) {
 }
 
 static void do_patch() {
-    size_t size = 0;
-    uint8_t* bundle = (uint8_t*)find_hermes_bundle(&size);
-    if (!bundle) {
-        LOGE("Hermes bundle not found in memory");
-        return;
-    }
-    LOGI("Hermes bundle @ %p size=%zu", bundle, size);
+    std::thread([]() {
+        size_t size = 0;
+        uint8_t* bundle = nullptr;
+        
+        // Loop chờ đến khi Hermes bundle xuất hiện trong memory
+        while (!bundle) {
+            bundle = (uint8_t*)find_hermes_bundle(&size);
+            if (!bundle) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        }
+        
+        LOGI("Hermes bundle found @ %p size=%zu", bundle, size);
 
-    if (!patch_bundle(bundle, size)) {
-        LOGE("Patch failed");
-    }
+        if (!patch_bundle(bundle, size)) {
+            LOGE("Patch failed");
+        } else {
+            LOGI("All features patched successfully");
+        }
+    }).detach();
 }
 
 extern "C" JNIEXPORT jint JNICALL
 JNI_OnLoad(JavaVM* vm, void* reserved) {
-    LOGI("LocketGold loaded via JNI_OnLoad");
+    LOGI("LocketGold loaded with Dobby");
     do_patch();
     return JNI_VERSION_1_6;
 }
-
