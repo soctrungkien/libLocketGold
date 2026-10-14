@@ -454,12 +454,8 @@ static void do_patch() {
 
 extern "C" JNIEXPORT jint JNICALL
 JNI_OnLoad(JavaVM* vm, void* reserved) {
-    LOGI("LocketGold loaded");
+    LOGI("LocketGold loaded via JNI_OnLoad");
     do_patch();
     return JNI_VERSION_1_6;
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_com_gold_Hook_init(JNIEnv* env, jclass clazz) {
-    do_patch();
-}
