@@ -8,6 +8,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <pthread.h>
+#include <unistd.h>
 #include <algorithm>
 #include "dobby.h"
 
@@ -400,14 +402,27 @@ static int hooked_openat(int dirfd, const char* pathname, int flags, mode_t mode
     return orig_openat(dirfd, pathname, flags, mode);
 }
 
-static void init_openat_hook() {
-    void* openat_addr = DobbySymbolResolver("libc.so", "openat");
-    if (openat_addr) {
-        DobbyHook(openat_addr, (void*)hooked_openat, (void**)&orig_openat);
-        LOGI("Successfully hooked openat!");
-    } else {
-        LOGE("Failed to resolve openat symbol");
+static void* openat_hook_thread(void*) {
+    void* openat_addr = nullptr;
+    LOGI("Bắt đầu vòng lặp chờ resolve symbol openat...");
+
+    while (!openat_addr) {
+        openat_addr = DobbySymbolResolver("libc.so", "openat");
+        if (openat_addr) {
+            DobbyHook(openat_addr, (void*)hooked_openat, (void**)&orig_openat);
+            LOGI("Successfully hooked openat sau khi retry!");
+            break;
+        }
+        // Nghỉ 10ms trước khi thử lại để tránh ngốn CPU
+        usleep(10000); 
     }
+    return nullptr;
+}
+
+static void init_openat_hook() {
+    pthread_t thread;
+    pthread_create(&thread, nullptr, openat_hook_thread, nullptr);
+    pthread_detach(thread);
 }
 
 extern "C" JNIEXPORT jint JNICALL
