@@ -22,39 +22,63 @@ namespace sha1 {
         uint8_t buffer[64];
     } context;
 
+    static uint32_t rol(uint32_t value, int bits) {
+        return (value << bits) | (value >> (32 - bits));
+    }
+
     static void transform(uint32_t state[5], const uint8_t buffer[64]) {
-        uint32_t a = state[0], b = state[1], c = state[2], d = state[3], e = state[4], t;
+        uint32_t a = state[0], b = state[1], c = state[2], d = state[3], e = state[4];
         uint32_t w[80];
         for (int i = 0; i < 16; i++) {
             w[i] = ((uint32_t)buffer[i*4] << 24) | ((uint32_t)buffer[i*4+1] << 16) |
                    ((uint32_t)buffer[i*4+2] << 8) | (uint32_t)buffer[i*4+3];
         }
         for (int i = 16; i < 80; i++) {
-            t = w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16];
-            w[i] = (t << 1) | (t >> 31);
+            uint32_t t = w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16];
+            w[i] = rol(t, 1);
         }
-        #define rol(value, bits) (((value) << (bits)) | ((value) >> (32 - (bits))))
-        #define blk(i) (t = w[(i)&15] ^= w[((i)-14)&15] ^= w[((i)-8)&15] ^= w[((i)-3)&15], (t << 1) | (t >> 31))
-        #define r0_op(v,w,x,y,z,i) z += ((w & (x ^ y)) ^ y) + w[i] + 0x5A827999 + rol(v, 5); w = rol(w, 30);
-        #define r1_op(v,w,x,y,z,i) z += ((w & (x ^ y)) ^ y) + blk(i) + 0x5A827999 + rol(v, 5); w = rol(w, 30);
-        #define r2_op(v,w,x,y,z,i) z += (w ^ x ^ y) + blk(i) + 0x6ED9EBA1 + rol(v, 5); w = rol(w, 30);
-        #define r3_op(v,w,x,y,z,i) z += (((w | x) & y) | (w & x)) + blk(i) + 0x8F1BBCDC + rol(v, 5); w = rol(w, 30);
-        #define r4_op(v,w,x,y,z,i) z += (w ^ x ^ y) + blk(i) + 0xCA62C1D6 + rol(v, 5); w = rol(w, 30);
+
+        auto f0 = [](uint32_t x, uint32_t y, uint32_t z) { return (x & y) | (~x & z); };
+        auto f1 = [](uint32_t x, uint32_t y, uint32_t z) { return x ^ y ^ z; };
+        auto f2 = [](uint32_t x, uint32_t y, uint32_t z) { return (x & y) | (x & z) | (y & z); };
+        auto f3 = [](uint32_t x, uint32_t y, uint32_t z) { return x ^ y ^ z; };
+
+        #define ROUND(v, w_reg, x, y, z, f, k, i) \
+            z += rol(v, 5) + f(w_reg, x, y) + k + w[i]; \
+            w_reg = rol(w_reg, 30);
 
         int i = 0;
-        while (i < 20) { r0_op(a,b,c,d,e,i++); r0_op(e,a,b,c,d,i++); r0_op(d,e,a,b,c,i++); r0_op(c,d,e,a,b,i++); r0_op(b,c,d,e,a,i++); }
-        while (i < 40) { r2_op(a,b,c,d,e,i++); r2_op(e,a,b,c,d,i++); r2_op(d,e,a,b,c,i++); r2_op(c,d,e,a,b,i++); r2_op(b,c,d,e,a,i++); }
-        while (i < 60) { r3_op(a,b,c,d,e,i++); r3_op(e,a,b,c,d,i++); r3_op(d,e,a,b,c,i++); r3_op(c,d,e,a,b,i++); r3_op(b,c,d,e,a,i++); }
-        while (i < 80) { r4_op(a,b,c,d,e,i++); r4_op(e,a,b,c,d,i++); r4_op(d,e,a,b,c,i++); r4_op(c,d,e,a,b,i++); r4_op(b,c,d,e,a,i++); }
+        while (i < 20) {
+            ROUND(a, b, c, d, e, f0, 0x5A827999, i++);
+            ROUND(e, a, b, c, d, f0, 0x5A827999, i++);
+            ROUND(d, e, a, b, c, f0, 0x5A827999, i++);
+            ROUND(c, d, e, a, b, f0, 0x5A827999, i++);
+            ROUND(b, c, d, e, a, f0, 0x5A827999, i++);
+        }
+        while (i < 40) {
+            ROUND(a, b, c, d, e, f1, 0x6ED9EBA1, i++);
+            ROUND(e, a, b, c, d, f1, 0x6ED9EBA1, i++);
+            ROUND(d, e, a, b, c, f1, 0x6ED9EBA1, i++);
+            ROUND(c, d, e, a, b, f1, 0x6ED9EBA1, i++);
+            ROUND(b, c, d, e, a, f1, 0x6ED9EBA1, i++);
+        }
+        while (i < 60) {
+            ROUND(a, b, c, d, e, f2, 0x8F1BBCDC, i++);
+            ROUND(e, a, b, c, d, f2, 0x8F1BBCDC, i++);
+            ROUND(d, e, a, b, c, f2, 0x8F1BBCDC, i++);
+            ROUND(c, d, e, a, b, f2, 0x8F1BBCDC, i++);
+            ROUND(b, c, d, e, a, f2, 0x8F1BBCDC, i++);
+        }
+        while (i < 80) {
+            ROUND(a, b, c, d, e, f3, 0xCA62C1D6, i++);
+            ROUND(e, a, b, c, d, f3, 0xCA62C1D6, i++);
+            ROUND(d, e, a, b, c, f3, 0xCA62C1D6, i++);
+            ROUND(c, d, e, a, b, f3, 0xCA62C1D6, i++);
+            ROUND(b, c, d, e, a, f3, 0xCA62C1D6, i++);
+        }
+        #undef ROUND
 
         state[0] += a; state[1] += b; state[2] += c; state[3] += d; state[4] += e;
-        #undef rol
-        #undef blk
-        #undef r0_op
-        #undef r1_op
-        #undef r2_op
-        #undef r3_op
-        #undef r4_op
     }
 
     static void init(context* context) {
@@ -316,7 +340,7 @@ static bool patch_bundle(uint8_t* data, size_t size) {
         return false;
     }
 
-    // 5. patch duration (int32, float, double markers like Python)
+    // 5. patch duration
     uint32_t candidates[][2] = {{2500, 2147000000}, {10000, 2147000000}};
     int patched = 0;
 
