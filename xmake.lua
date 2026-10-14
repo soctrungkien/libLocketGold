@@ -9,7 +9,7 @@ target("LocketGold")
     set_languages("c++17")
     add_files("src/main.cpp")
     add_packages("dobby")
-    add_syslinks("log", "dl", "pthread") -- Thêm pthread ở đây
+    add_syslinks("log", "dl") -- Bỏ -lpthread ở đây
     set_arch("arm64-v8a")
     set_plat("android")
     set_toolchains("ndk")
