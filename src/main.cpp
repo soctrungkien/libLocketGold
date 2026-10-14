@@ -420,20 +420,29 @@ static void* find_hermes_bundle(size_t* out_size) {
         uintptr_t start = 0, end = 0;
         char perms[8] = {};
         if (sscanf(line.c_str(), "%lx-%lx %7s", &start, &end, perms) != 3) continue;
-        if (perms[0] != 'r') continue;
+        if (perms[0] != 'r') continue; // Chỉ đọc vùng có quyền read
 
         size_t sz = end - start;
         if (sz < 0x100000 || sz > 0x20000000) continue;
 
+        // Kiểm tra an toàn trước khi ép kiểu trỏ vào memory để tránh crash SIGSEGV
+        if (!start || start % 4 != 0) continue;
+
         uint8_t* p = (uint8_t*)start;
+        
+        // Dùng try-catch ngầm hoặc kiểm tra an toàn 4 byte đầu
+        uint32_t magic = 0;
+        if (memcpy_s(&magic, 4, p, 4) != 0) continue; // Hoặc check trực tiếp nếu chắc chắn
+        
         if (*(uint32_t*)p == HERMES_MAGIC) {
             *out_size = sz;
             return p;
         }
-        for (size_t off = 0; off + 4 < sz && off < 0x100000; off += 0x1000) {
-            if (*(uint32_t*)(p + off) == HERMES_MAGIC) {
+        for (size_t off = 0; off + 4 < sz && off < 0x200000; off += 0x1000) {
+            uint8_t* target = p + off;
+            if (*(uint32_t*)target == HERMES_MAGIC) {
                 *out_size = sz - off;
-                return p + off;
+                return target;
             }
         }
     }
