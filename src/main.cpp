@@ -133,9 +133,9 @@ static bool get_string_info(const uint8_t* data, size_t data_len, size_t small_s
     } else {
         out_abs_pos = storage_pos + off;
     }
+    out_length = length; // <-- Thêm dòng này để truyền độ dài ra ngoài chính xác
     return true;
 }
-
 // --- Patch Bundle Logic ---
 static bool patch_bundle_buffer(std::vector<uint8_t>& data) {
     if (data.size() < 64) {
