@@ -15,7 +15,6 @@
 static constexpr uint32_t HERMES_VERSION = 96;
 static constexpr uint32_t HERMES_MAGIC = 0x03BC1FC6;
 
-// Minimal SHA-1 implementation for updating bundle hash
 namespace sha1 {
     typedef struct {
         uint32_t state[5];
@@ -35,27 +34,27 @@ namespace sha1 {
             w[i] = (t << 1) | (t >> 31);
         }
         #define rol(value, bits) (((value) << (bits)) | ((value) >> (32 - (bits))))
-        #define blk(i) (t = w[i&15] ^= w[(i-14)&15] ^= w[(i-8)&15] ^= w[(i-3)&15], (t << 1) | (t >> 31))
-        #define r0(v,w,x,y,z,i) z += ((w & (x ^ y)) ^ y) + w[i] + 0x5A827999 + rol(v, 5); w = rol(w, 30);
-        #define r1(v,w,x,y,z,i) z += ((w & (x ^ y)) ^ y) + blk(i) + 0x5A827999 + rol(v, 5); w = rol(w, 30);
-        #define r2(v,w,x,y,z,i) z += (w ^ x ^ y) + blk(i) + 0x6ED9EBA1 + rol(v, 5); w = rol(w, 30);
-        #define r3(v,w,x,y,z,i) z += (((w | x) & y) | (w & x)) + blk(i) + 0x8F1BBCDC + rol(v, 5); w = rol(w, 30);
-        #define r4(v,w,x,y,z,i) z += (w ^ x ^ y) + blk(i) + 0xCA62C1D6 + rol(v, 5); w = rol(w, 30);
+        #define blk(i) (t = w[(i)&15] ^= w[((i)-14)&15] ^= w[((i)-8)&15] ^= w[((i)-3)&15], (t << 1) | (t >> 31))
+        #define r0_op(v,w,x,y,z,i) z += ((w & (x ^ y)) ^ y) + w[i] + 0x5A827999 + rol(v, 5); w = rol(w, 30);
+        #define r1_op(v,w,x,y,z,i) z += ((w & (x ^ y)) ^ y) + blk(i) + 0x5A827999 + rol(v, 5); w = rol(w, 30);
+        #define r2_op(v,w,x,y,z,i) z += (w ^ x ^ y) + blk(i) + 0x6ED9EBA1 + rol(v, 5); w = rol(w, 30);
+        #define r3_op(v,w,x,y,z,i) z += (((w | x) & y) | (w & x)) + blk(i) + 0x8F1BBCDC + rol(v, 5); w = rol(w, 30);
+        #define r4_op(v,w,x,y,z,i) z += (w ^ x ^ y) + blk(i) + 0xCA62C1D6 + rol(v, 5); w = rol(w, 30);
 
         int i = 0;
-        while (i < 20) { r0(a,b,c,d,e,i++); r0(e,a,b,c,d,i++); r0(d,e,a,b,c,i++); r0(c,d,e,a,b,i++); r0(b,c,d,e,a,i++); }
-        while (i < 40) { r2(a,b,c,d,e,i++); r2(e,a,b,c,d,i++); r2(d,e,a,b,c,i++); r2(c,d,e,a,b,i++); r2(b,c,d,e,a,i++); }
-        while (i < 60) { r3(a,b,c,d,e,i++); r3(e,a,b,c,d,i++); r3(d,e,a,b,c,i++); r3(c,d,e,a,b,i++); r3(b,c,d,e,a,i++); }
-        while (i < 80) { r4(a,b,c,d,e,i++); r4(e,a,b,c,d,i++); r4(d,e,a,b,c,i++); r4(c,d,e,a,b,i++); r4(b,c,d,e,a,i++); }
+        while (i < 20) { r0_op(a,b,c,d,e,i++); r0_op(e,a,b,c,d,i++); r0_op(d,e,a,b,c,i++); r0_op(c,d,e,a,b,i++); r0_op(b,c,d,e,a,i++); }
+        while (i < 40) { r2_op(a,b,c,d,e,i++); r2_op(e,a,b,c,d,i++); r2_op(d,e,a,b,c,i++); r2_op(c,d,e,a,b,i++); r2_op(b,c,d,e,a,i++); }
+        while (i < 60) { r3_op(a,b,c,d,e,i++); r3_op(e,a,b,c,d,i++); r3_op(d,e,a,b,c,i++); r3_op(c,d,e,a,b,i++); r3_op(b,c,d,e,a,i++); }
+        while (i < 80) { r4_op(a,b,c,d,e,i++); r4_op(e,a,b,c,d,i++); r4_op(d,e,a,b,c,i++); r4_op(c,d,e,a,b,i++); r4_op(b,c,d,e,a,i++); }
 
         state[0] += a; state[1] += b; state[2] += c; state[3] += d; state[4] += e;
         #undef rol
         #undef blk
-        #undef r0
-        #undef r1
-        #undef r2
-        #undef r3
-        #undef r4
+        #undef r0_op
+        #undef r1_op
+        #undef r2_op
+        #undef r3_op
+        #undef r4_op
     }
 
     static void init(context* context) {
