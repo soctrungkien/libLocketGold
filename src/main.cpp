@@ -9,7 +9,6 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <pthread.h>
-#include <unistd.h>
 #include <algorithm>
 #include "dobby.h"
 
@@ -120,22 +119,24 @@ static bool region_equals_ascii(const uint8_t* data, size_t data_len, size_t pos
 
 static bool get_string_info(const uint8_t* data, size_t data_len, size_t small_string_table_pos, size_t overflow_table_pos, size_t storage_pos, size_t string_count, size_t idx, size_t& out_abs_pos, size_t& out_length, bool& out_is_utf16) {
     if (idx >= string_count) return false;
+    // Đã fix lỗi thiếu dấu * ở đây
     uint32_t entry = *reinterpret_cast<const uint32_t*>(data + small_string_table_pos + idx * 4);
     out_is_utf16 = (entry & 1) != 0;
     if (out_is_utf16) return true;
     
-    size_t off = (entry >> 1) & 0x7FFFFF;
-    size_t length = (entry >> 24) & 0xFF;
-    if (length == 0xFF) {
-        uint32_t ov = *reinterpret_cast<const uint32_t*>(data + overflow_table_pos + off * 8);
-        length = *reinterpret_cast<const uint32_t*>(data + overflow_table_pos + off * 8 + 4);
-        out_abs_pos = storage_pos + ov;
-    } else {
-        out_abs_pos = storage_pos + off;
-    }
-    out_length = length; // <-- Thêm dòng này để truyền độ dài ra ngoài chính xác
+    size_t off = (entry >> 1) & 0x7FFFFF;  
+    size_t length = (entry >> 24) & 0xFF;  
+    if (length == 0xFF) {  
+        uint32_t ov = *reinterpret_cast<const uint32_t*>(data + overflow_table_pos + off * 8);  
+        length = *reinterpret_cast<const uint32_t*>(data + overflow_table_pos + off * 8 + 4);  
+        out_abs_pos = storage_pos + ov;  
+    } else {  
+        out_abs_pos = storage_pos + off;  
+    }  
+    out_length = length;
     return true;
 }
+
 // --- Patch Bundle Logic ---
 static bool patch_bundle_buffer(std::vector<uint8_t>& data) {
     if (data.size() < 64) {
@@ -143,187 +144,187 @@ static bool patch_bundle_buffer(std::vector<uint8_t>& data) {
         return false;
     }
 
-    uint32_t version = *reinterpret_cast<uint32_t*>(data.data() + 8);
-    if (version != HERMES_VERSION) {
-        LOGW("[!] Cảnh báo: Hermes version %u != %u", version, HERMES_VERSION);
-    }
+    uint32_t version = *reinterpret_cast<uint32_t*>(data.data() + 8);  
+    if (version != HERMES_VERSION) {  
+        LOGW("[!] Cảnh báo: Hermes version %u != %u", version, HERMES_VERSION);  
+    }  
 
-    uint32_t function_count = *reinterpret_cast<uint32_t*>(data.data() + 40);
-    uint32_t string_kind_count = *reinterpret_cast<uint32_t*>(data.data() + 44);
-    uint32_t identifier_count = *reinterpret_cast<uint32_t*>(data.data() + 48);
-    uint32_t string_count = *reinterpret_cast<uint32_t*>(data.data() + 52);
-    uint32_t overflow_count = *reinterpret_cast<uint32_t*>(data.data() + 56);
-    uint32_t string_storage_size = *reinterpret_cast<uint32_t*>(data.data() + 60);
+    uint32_t function_count = *reinterpret_cast<uint32_t*>(data.data() + 40);  
+    uint32_t string_kind_count = *reinterpret_cast<uint32_t*>(data.data() + 44);  
+    uint32_t identifier_count = *reinterpret_cast<uint32_t*>(data.data() + 48);  
+    uint32_t string_count = *reinterpret_cast<uint32_t*>(data.data() + 52);  
+    uint32_t overflow_count = *reinterpret_cast<uint32_t*>(data.data() + 56);  
+    uint32_t string_storage_size = *reinterpret_cast<uint32_t*>(data.data() + 60);  
 
-    LOGI("[*] functions=%u, strings=%u", function_count, string_count);
+    LOGI("[*] functions=%u, strings=%u", function_count, string_count);  
 
-    size_t p = align_val(data.size(), 32, 111);
-    size_t headers_start = p;
-    p = align_val(data.size(), 4, p + function_count * 16);
-    p = align_val(data.size(), 4, p + string_kind_count * 4);
-    p = align_val(data.size(), 4, p + identifier_count * 4);
-    size_t small_string_table_pos = p;
-    p = align_val(data.size(), 4, p + string_count * 4);
-    size_t overflow_table_pos = p;
-    p = align_val(data.size(), 4, p + overflow_count * 8);
-    size_t storage_pos = p;
+    size_t p = align_val(data.size(), 32, 111);  
+    size_t headers_start = p;  
+    p = align_val(data.size(), 4, p + function_count * 16);  
+    p = align_val(data.size(), 4, p + string_kind_count * 4);  
+    p = align_val(data.size(), 4, p + identifier_count * 4);  
+    size_t small_string_table_pos = p;  
+    p = align_val(data.size(), 4, p + string_count * 4);  
+    size_t overflow_table_pos = p;  
+    p = align_val(data.size(), 4, p + overflow_count * 8);  
+    size_t storage_pos = p;  
 
-    if (p + string_storage_size > data.size()) {
-        LOGE("[-] string storage vượt size: p=%zu, storage_size=%u, total=%zu", p, string_storage_size, data.size());
-        return false;
-    }
+    if (p + string_storage_size > data.size()) {  
+        LOGE("[-] string storage vượt size: p=%zu, storage_size=%u, total=%zu", p, string_storage_size, data.size());  
+        return false;  
+    }  
 
-    // 1. entitlement
-    int ent_id = -1;
-    for (uint32_t i = 0; i < string_count; i++) {
-        size_t abs_pos = 0, length = 0;
-        bool is_utf16 = false;
-        if (get_string_info(data.data(), data.size(), small_string_table_pos, overflow_table_pos, storage_pos, string_count, i, abs_pos, length, is_utf16)) {
-            if (is_utf16) continue;
-            if (length == std::strlen(STR_ENTITLEMENT) && region_equals_ascii(data.data(), data.size(), abs_pos, STR_ENTITLEMENT, length)) {
-                ent_id = i;
-                LOGI("[+] entitlement id=%d", ent_id);
-                break;
-            }
-        }
-    }
-    if (ent_id < 0) {
-        LOGE("[-] Không tìm thấy entitlement string");
-        return false;
-    }
+    // 1. entitlement  
+    int ent_id = -1;  
+    for (uint32_t i = 0; i < string_count; i++) {  
+        size_t abs_pos = 0, length = 0;  
+        bool is_utf16 = false;  
+        if (get_string_info(data.data(), data.size(), small_string_table_pos, overflow_table_pos, storage_pos, string_count, i, abs_pos, length, is_utf16)) {  
+            if (is_utf16) continue;  
+            if (length == std::strlen(STR_ENTITLEMENT) && region_equals_ascii(data.data(), data.size(), abs_pos, STR_ENTITLEMENT, length)) {  
+                ent_id = i;  
+                LOGI("[+] entitlement id=%d", ent_id);  
+                break;  
+            }  
+        }  
+    }  
+    if (ent_id < 0) {  
+        LOGE("[-] Không tìm thấy entitlement string");  
+        return false;  
+    }  
 
-    // 2. scan functions
-    size_t badge_offset = (size_t)-1, badge_size = 0;
-    size_t payments_offset = (size_t)-1, payments_size = 0;
-    size_t camera_offset = (size_t)-1, camera_size = 0;
+    // 2. scan functions  
+    size_t badge_offset = (size_t)-1, badge_size = 0;  
+    size_t payments_offset = (size_t)-1, payments_size = 0;  
+    size_t camera_offset = (size_t)-1, camera_size = 0;  
 
-    for (uint32_t i = 0; i < function_count; i++) {
-        size_t base = headers_start + i * 16;
-        if (base + 16 > data.size()) break;
-        uint32_t w1 = *reinterpret_cast<uint32_t*>(data.data() + base + 4);
-        if (((data[base + 15] >> 4) & 1) != 0) continue;
-        uint32_t name_id = (w1 >> 15) & 0x1FFFF;
-        if (name_id >= string_count) continue;
+    for (uint32_t i = 0; i < function_count; i++) {  
+        size_t base = headers_start + i * 16;  
+        if (base + 16 > data.size()) break;  
+        uint32_t w1 = *reinterpret_cast<uint32_t*>(data.data() + base + 4);  
+        if (((data[base + 15] >> 4) & 1) != 0) continue;  
+        uint32_t name_id = (w1 >> 15) & 0x1FFFF;  
+        if (name_id >= string_count) continue;  
 
-        size_t abs_pos = 0, length = 0;
-        bool is_utf16 = false;
-        if (get_string_info(data.data(), data.size(), small_string_table_pos, overflow_table_pos, storage_pos, string_count, name_id, abs_pos, length, is_utf16)) {
-            if (is_utf16) continue;
-            uint32_t offset = *reinterpret_cast<uint32_t*>(data.data() + base) & 0x1FFFFFF;
-            uint32_t size_fn = w1 & 0x7FFF;
+        size_t abs_pos = 0, length = 0;  
+        bool is_utf16 = false;  
+        if (get_string_info(data.data(), data.size(), small_string_table_pos, overflow_table_pos, storage_pos, string_count, name_id, abs_pos, length, is_utf16)) {  
+            if (is_utf16) continue;  
+            uint32_t offset = *reinterpret_cast<uint32_t*>(data.data() + base) & 0x1FFFFFF;  
+            uint32_t size_fn = w1 & 0x7FFF;  
 
-            if (badge_offset == (size_t)-1 && length == std::strlen(FN_BADGE) && region_equals_ascii(data.data(), data.size(), abs_pos, FN_BADGE, length)) {
-                badge_offset = offset; badge_size = size_fn;
-                LOGI("[+] doesUserHaveGoldBadge @ %zu", badge_offset);
-            } else if (payments_offset == (size_t)-1 && length == std::strlen(FN_PAYMENTS) && region_equals_ascii(data.data(), data.size(), abs_pos, FN_PAYMENTS, length)) {
-                payments_offset = offset; payments_size = size_fn;
-                LOGI("[+] PaymentsProvider @ %zu", payments_offset);
-            } else if (camera_offset == (size_t)-1 && length == std::strlen(FN_CAMERA) && region_equals_ascii(data.data(), data.size(), abs_pos, FN_CAMERA, length)) {
-                camera_offset = offset; camera_size = size_fn;
-                LOGI("[+] getAndroidCameraVideoRecordingConfig @ %zu", camera_offset);
-            }
-        }
-        if (badge_offset != (size_t)-1 && payments_offset != (size_t)-1 && camera_offset != (size_t)-1) break;
-    }
+            if (badge_offset == (size_t)-1 && length == std::strlen(FN_BADGE) && region_equals_ascii(data.data(), data.size(), abs_pos, FN_BADGE, length)) {  
+                badge_offset = offset; badge_size = size_fn;  
+                LOGI("[+] doesUserHaveGoldBadge @ %zu", badge_offset);  
+            } else if (payments_offset == (size_t)-1 && length == std::strlen(FN_PAYMENTS) && region_equals_ascii(data.data(), data.size(), abs_pos, FN_PAYMENTS, length)) {  
+                payments_offset = offset; payments_size = size_fn;  
+                LOGI("[+] PaymentsProvider @ %zu", payments_offset);  
+            } else if (camera_offset == (size_t)-1 && length == std::strlen(FN_CAMERA) && region_equals_ascii(data.data(), data.size(), abs_pos, FN_CAMERA, length)) {  
+                camera_offset = offset; camera_size = size_fn;  
+                LOGI("[+] getAndroidCameraVideoRecordingConfig @ %zu", camera_offset);  
+            }  
+        }  
+        if (badge_offset != (size_t)-1 && payments_offset != (size_t)-1 && camera_offset != (size_t)-1) break;  
+    }  
 
-    if (badge_offset == (size_t)-1 || payments_offset == (size_t)-1) {
-        LOGE("[-] Thiếu hàm badge (%zu) hoặc payments (%zu)", badge_offset, payments_offset);
-        return false;
-    }
+    if (badge_offset == (size_t)-1 || payments_offset == (size_t)-1) {  
+        LOGE("[-] Thiếu hàm badge (%zu) hoặc payments (%zu)", badge_offset, payments_offset);  
+        return false;  
+    }  
 
-    // 3. patch badge
-    if (badge_size < 4 || badge_offset + badge_size > data.size() || data[badge_offset + badge_size - 2] != 0x5C) {
-        LOGE("[-] Cấu trúc badge lỗi: size=%zu, offset=%zu", badge_size, badge_offset);
-        return false;
-    }
-    uint8_t ret_reg = data[badge_offset + badge_size - 1];
-    data[badge_offset] = 0x78;
-    data[badge_offset + 1] = ret_reg;
-    data[badge_offset + 2] = 0x5C;
-    data[badge_offset + 3] = ret_reg;
-    LOGI("[+] Badge patched successfully");
+    // 3. patch badge  
+    if (badge_size < 4 || badge_offset + badge_size > data.size() || data[badge_offset + badge_size - 2] != 0x5C) {  
+        LOGE("[-] Cấu trúc badge lỗi: size=%zu, offset=%zu", badge_size, badge_offset);  
+        return false;  
+    }  
+    uint8_t ret_reg = data[badge_offset + badge_size - 1];  
+    data[badge_offset] = 0x78;  
+    data[badge_offset + 1] = ret_reg;  
+    data[badge_offset + 2] = 0x5C;  
+    data[badge_offset + 3] = ret_reg;  
+    LOGI("[+] Badge patched successfully");  
 
-    // 4. patch payments
-    uint16_t id_le = static_cast<uint16_t>(ent_id);
-    bool patched_pay = false;
-    if (payments_offset + payments_size <= data.size()) {
-        for (size_t i = 0; i + 12 <= payments_size; i++) {
-            size_t pos = payments_offset + i;
-            uint16_t val = *reinterpret_cast<uint16_t*>(data.data() + pos + 4);
-            if (val == id_le && data[pos + 6] == 0x0B && data[pos + 7] == data[pos + 8] &&
-                data[pos + 9] == 0x0B && data[pos + 11] == data[pos + 7]) {
-                uint8_t d1 = data[pos + 7], d2 = data[pos + 10];
-                size_t at = payments_offset + i + 6;
-                data[at] = 0x78; data[at+1] = d2;
-                data[at+2] = 0x79; data[at+3] = d1;
-                data[at+4] = 0x78; data[at+5] = d2;
-                LOGI("[+] PaymentsProvider patched @ %zu", at);
-                patched_pay = true;
-                break;
-            }
-        }
-    }
-    if (!patched_pay) {
-        LOGE("[-] Không tìm thấy pattern PaymentsProvider");
-        return false;
-    }
+    // 4. patch payments  
+    uint16_t id_le = static_cast<uint16_t>(ent_id);  
+    bool patched_pay = false;  
+    if (payments_offset + payments_size <= data.size()) {  
+        for (size_t i = 0; i + 12 <= payments_size; i++) {  
+            size_t pos = payments_offset + i;  
+            uint16_t val = *reinterpret_cast<uint16_t*>(data.data() + pos + 4);  
+            if (val == id_le && data[pos + 6] == 0x0B && data[pos + 7] == data[pos + 8] &&  
+                data[pos + 9] == 0x0B && data[pos + 11] == data[pos + 7]) {  
+                uint8_t d1 = data[pos + 7], d2 = data[pos + 10];  
+                size_t at = payments_offset + i + 6;  
+                data[at] = 0x78; data[at+1] = d2;  
+                data[at+2] = 0x79; data[at+3] = d1;  
+                data[at+4] = 0x78; data[at+5] = d2;  
+                LOGI("[+] PaymentsProvider patched @ %zu", at);  
+                patched_pay = true;  
+                break;  
+            }  
+        }  
+    }  
+    if (!patched_pay) {  
+        LOGE("[-] Không tìm thấy pattern PaymentsProvider");  
+        return false;  
+    }  
 
-    // 5. patch duration
-    uint32_t candidates[] = {2500, 10000};
-    uint32_t new_val = 2147000000;
-    for (uint32_t target_val : candidates) {
-        uint8_t old_b[4], new_b[4];
-        std::memcpy(old_b, &target_val, 4);
-        std::memcpy(new_b, &new_val, 4);
+    // 5. patch duration  
+    uint32_t candidates[] = {2500, 10000};  
+    uint32_t new_val = 2147000000;  
+    for (uint32_t target_val : candidates) {  
+        uint8_t old_b[4], new_b[4];  
+        std::memcpy(old_b, &target_val, 4);  
+        std::memcpy(new_b, &new_val, 4);  
 
-        size_t start = 0;
-        while (start < data.size()) {
-            auto found = std::search(data.begin() + start, data.end(), old_b, old_b + 4);
-            if (found == data.end()) break;
-            size_t idx = std::distance(data.begin(), found);
+        size_t start = 0;  
+        while (start < data.size()) {  
+            auto found = std::search(data.begin() + start, data.end(), old_b, old_b + 4);  
+            if (found == data.end()) break;  
+            size_t idx = std::distance(data.begin(), found);  
 
-            size_t left = (idx >= 64) ? idx - 64 : 0;
-            size_t right = (idx + 4 + 64 <= data.size()) ? idx + 4 + 64 : data.size();
+            size_t left = (idx >= 64) ? idx - 64 : 0;  
+            size_t right = (idx + 4 + 64 <= data.size()) ? idx + 4 + 64 : data.size();  
 
-            uint32_t m_i32 = 720;
-            float m_f32 = 720.0f;
-            double m_f64 = 720.0;
-            bool has_marker = false;
-            for (size_t m = left; m + 4 <= right; m++) {
-                if (std::memcmp(data.data() + m, &m_i32, 4) == 0 ||
-                    std::memcmp(data.data() + m, &m_f32, 4) == 0 ||
-                    (m + 8 <= right && std::memcmp(data.data() + m, &m_f64, 8) == 0)) {
-                    has_marker = true;
-                    break;
-                }
-            }
-            if (has_marker) {
-                std::memcpy(data.data() + idx, new_b, 4);
-            }
-            start = idx + 1;
-        }
-    }
+            uint32_t m_i32 = 720;  
+            float m_f32 = 720.0f;  
+            double m_f64 = 720.0;  
+            bool has_marker = false;  
+            for (size_t m = left; m + 4 <= right; m++) {  
+                if (std::memcmp(data.data() + m, &m_i32, 4) == 0 ||  
+                    std::memcmp(data.data() + m, &m_f32, 4) == 0 ||  
+                    (m + 8 <= right && std::memcmp(data.data() + m, &m_f64, 8) == 0)) {  
+                    has_marker = true;  
+                    break;  
+                }  
+            }  
+            if (has_marker) {  
+                std::memcpy(data.data() + idx, new_b, 4);  
+            }  
+            start = idx + 1;  
+        }  
+    }  
 
-    // 6. bypass remote config camera
-    for (uint32_t i = 0; i < string_count; i++) {
-        size_t abs_pos = 0, length = 0;
-        bool is_utf16 = false;
-        if (get_string_info(data.data(), data.size(), small_string_table_pos, overflow_table_pos, storage_pos, string_count, i, abs_pos, length, is_utf16)) {
-            if (is_utf16) continue;
-            if (length == std::strlen(STR_CAMERA_CFG) && region_equals_ascii(data.data(), data.size(), abs_pos, STR_CAMERA_CFG, length)) {
-                std::memset(data.data() + abs_pos, 0, length);
-                break;
-            }
-        }
-    }
+    // 6. bypass remote config camera  
+    for (uint32_t i = 0; i < string_count; i++) {  
+        size_t abs_pos = 0, length = 0;  
+        bool is_utf16 = false;  
+        if (get_string_info(data.data(), data.size(), small_string_table_pos, overflow_table_pos, storage_pos, string_count, i, abs_pos, length, is_utf16)) {  
+            if (is_utf16) continue;  
+            if (length == std::strlen(STR_CAMERA_CFG) && region_equals_ascii(data.data(), data.size(), abs_pos, STR_CAMERA_CFG, length)) {  
+                std::memset(data.data() + abs_pos, 0, length);  
+                break;  
+            }  
+        }  
+    }  
 
-    // 7. update SHA1
-    if (data.size() >= 20) {
-        SHA1_CTX ctx;
-        sha1_init(&ctx);
-        sha1_update(&ctx, data.data(), data.size() - 20);
-        sha1_final(data.data() + data.size() - 20, &ctx);
-    }
+    // 7. update SHA1  
+    if (data.size() >= 20) {  
+        SHA1_CTX ctx;  
+        sha1_init(&ctx);  
+        sha1_update(&ctx, data.data(), data.size() - 20);  
+        sha1_final(data.data() + data.size() - 20, &ctx);  
+    }  
 
     return true;
 }
@@ -348,40 +349,40 @@ static std::vector<uint8_t> extract_bundle_from_apk(const std::string& apk_path)
     std::ifstream apk(apk_path, std::ios::binary);
     if (!apk.is_open()) return {};
 
-    apk.seekg(0, std::ios::end);
-    size_t file_size = apk.tellg();
-    apk.seekg(0, std::ios::beg);
+    apk.seekg(0, std::ios::end);  
+    size_t file_size = apk.tellg();  
+    apk.seekg(0, std::ios::beg);  
 
-    std::vector<uint8_t> apk_data(file_size);
-    apk.read(reinterpret_cast<char*>(apk_data.data()), file_size);
-    apk.close();
+    std::vector<uint8_t> apk_data(file_size);  
+    apk.read(reinterpret_cast<char*>(apk_data.data()), file_size);  
+    apk.close();  
 
-    const std::string target = "assets/index.android.bundle";
-    for (size_t i = 0; i < apk_data.size() - target.size(); ++i) {
-        if (std::memcmp(&apk_data[i], target.data(), target.size()) == 0) {
-            if (i >= 30) {
-                size_t header_pos = i - 30;
-                uint32_t signature = *reinterpret_cast<const uint32_t*>(&apk_data[header_pos]);
-                if (signature == 0x04034b50) {
-                    uint16_t compression_method = *reinterpret_cast<const uint16_t*>(&apk_data[header_pos + 8]);
-                    uint32_t uncompressed_size = *reinterpret_cast<const uint32_t*>(&apk_data[header_pos + 22]);
-                    uint16_t name_len = *reinterpret_cast<const uint16_t*>(&apk_data[header_pos + 26]);
-                    uint16_t extra_len = *reinterpret_cast<const uint16_t*>(&apk_data[header_pos + 28]);
+    const std::string target = "assets/index.android.bundle";  
+    for (size_t i = 0; i < apk_data.size() - target.size(); ++i) {  
+        if (std::memcmp(&apk_data[i], target.data(), target.size()) == 0) {  
+            if (i >= 30) {  
+                size_t header_pos = i - 30;  
+                uint32_t signature = *reinterpret_cast<const uint32_t*>(&apk_data[header_pos]);  
+                if (signature == 0x04034b50) {  
+                    uint16_t compression_method = *reinterpret_cast<const uint16_t*>(&apk_data[header_pos + 8]);  
+                    uint32_t uncompressed_size = *reinterpret_cast<const uint32_t*>(&apk_data[header_pos + 22]);  
+                    uint16_t name_len = *reinterpret_cast<const uint16_t*>(&apk_data[header_pos + 26]);  
+                    uint16_t extra_len = *reinterpret_cast<const uint16_t*>(&apk_data[header_pos + 28]);  
 
-                    size_t data_offset = header_pos + 30 + name_len + extra_len;
-                    if (compression_method == 0 && data_offset + uncompressed_size <= apk_data.size()) {
-                        std::vector<uint8_t> bundle_data(uncompressed_size);
-                        std::memcpy(bundle_data.data(), &apk_data[data_offset], uncompressed_size);
-                        return bundle_data;
-                    }
-                }
-            }
-        }
-    }
+                    size_t data_offset = header_pos + 30 + name_len + extra_len;  
+                    if (compression_method == 0 && data_offset + uncompressed_size <= apk_data.size()) {  
+                        std::vector<uint8_t> bundle_data(uncompressed_size);  
+                        std::memcpy(bundle_data.data(), &apk_data[data_offset], uncompressed_size);  
+                        return bundle_data;  
+                    }  
+                }  
+            }  
+        }  
+    }  
     return {};
 }
 
-// Automatically extract and patch on every startup
+// Automatically extract and patch
 static void prepare_and_patch_bundle() {
     std::string apk_path = find_apk_path();
     if (apk_path.empty()) {
@@ -390,29 +391,30 @@ static void prepare_and_patch_bundle() {
     }
     LOGI("Found APK path: %s", apk_path.c_str());
 
-    std::vector<uint8_t> bundle = extract_bundle_from_apk(apk_path);
-    if (bundle.empty()) {
-        LOGE("Failed to extract index.android.bundle from APK!");
-        return;
-    }
-    LOGI("Extracted bundle size: %zu bytes", bundle.size());
+    std::vector<uint8_t> bundle = extract_bundle_from_apk(apk_path);  
+    if (bundle.empty()) {  
+        LOGE("Failed to extract index.android.bundle from APK!");  
+        return;  
+    }  
+    LOGI("Extracted bundle size: %zu bytes", bundle.size());  
 
-    if (!patch_bundle_buffer(bundle)) {
-        LOGE("Failed to patch bundle buffer!");
-        return;
-    }
+    if (!patch_bundle_buffer(bundle)) {  
+        LOGE("Failed to patch bundle buffer!");  
+        return;  
+    }  
 
-    std::ofstream outfile(REDIRECT_PATH, std::ios::binary);
-    if (outfile.is_open()) {
-        outfile.write(reinterpret_cast<const char*>(bundle.data()), bundle.size());
-        outfile.close();
-        LOGI("Patched bundle successfully written to: %s", REDIRECT_PATH);
-    } else {
-        LOGE("Failed to write patched bundle to %s", REDIRECT_PATH);
+    std::ofstream outfile(REDIRECT_PATH, std::ios::binary);  
+    if (outfile.is_open()) {  
+        outfile.write(reinterpret_cast<const char*>(bundle.data()), bundle.size());  
+        outfile.close();  
+        LOGI("Patched bundle successfully written to: %s", REDIRECT_PATH);  
+    } else {  
+        LOGE("Failed to write patched bundle to %s", REDIRECT_PATH);  
     }
 }
 
 // --- Dobby Hook openat ---
+// Đã fix lỗi khai báo thiếu dấu * ở const char* pathname
 typedef int (*openat_t)(int dirfd, const char* pathname, int flags, mode_t mode);
 static openat_t orig_openat = nullptr;
 
@@ -432,16 +434,15 @@ static void* openat_hook_thread(void*) {
     void* openat_addr = nullptr;
     LOGI("Bắt đầu vòng lặp chờ resolve symbol openat...");
 
-    while (!openat_addr) {
-        openat_addr = DobbySymbolResolver("libc.so", "openat");
-        if (openat_addr) {
-            DobbyHook(openat_addr, (void*)hooked_openat, (void**)&orig_openat);
-            LOGI("Successfully hooked openat sau khi retry!");
-            break;
-        }
-        // Nghỉ 10ms trước khi thử lại để tránh ngốn CPU
-        usleep(10000); 
-    }
+    while (!openat_addr) {  
+        openat_addr = DobbySymbolResolver("libc.so", "openat");  
+        if (openat_addr) {  
+            DobbyHook(openat_addr, (void*)hooked_openat, (void**)&orig_openat);  
+            LOGI("Successfully hooked openat sau khi retry!");  
+            break;  
+        }  
+        usleep(10000);   
+    }  
     return nullptr;
 }
 
@@ -451,10 +452,15 @@ static void init_openat_hook() {
     pthread_detach(thread);
 }
 
-extern "C" JNIEXPORT jint JNICALL
-JNI_OnLoad(JavaVM* vm, void* reserved) {
-    LOGI("LocketGold initializing...");
+// --- KHỞI CHẠY SIÊU SỚM BẰNG CONSTRUCTOR ---
+__attribute__((constructor)) static void locket_gold_constructor() {
+    LOGI("LocketGold constructor initializing early...");
     prepare_and_patch_bundle();
     init_openat_hook();
+}
+
+extern "C" JNIEXPORT jint JNICALL
+JNI_OnLoad(JavaVM* vm, void* reserved) {
+    LOGI("LocketGold JNI_OnLoad loaded.");
     return JNI_VERSION_1_6;
 }
