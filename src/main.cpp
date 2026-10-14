@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdint>
 #include <unistd.h>
+#include <algorithm>
 #include "dobby.h"
 
 #define TAG "LocketGold"
@@ -12,14 +13,14 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 
-static const uint32_t HERMES_VERSION = 96;[span_1](start_span)[span_1](end_span)
+static const uint32_t HERMES_VERSION = 96;
 static const uint32_t HERMES_MAGIC = 0x03BC1FC6;
 
-static const char FN_BADGE[] = "doesUserHaveGoldBadge";[span_2](start_span)[span_2](end_span)
-static const char FN_PAYMENTS[] = "PaymentsProvider";[span_3](start_span)[span_3](end_span)
-static const char FN_CAMERA[] = "getAndroidCameraVideoRecordingConfig";[span_4](start_span)[span_4](end_span)
-static const char STR_ENTITLEMENT[] = "subscription_entitlement";[span_5](start_span)[span_5](end_span)
-static const char STR_CAMERA_CFG[] = "android_camera_video_recording";[span_6](start_span)[span_6](end_span)
+static const char FN_BADGE[] = "doesUserHaveGoldBadge";
+static const char FN_PAYMENTS[] = "PaymentsProvider";
+static const char FN_CAMERA[] = "getAndroidCameraVideoRecordingConfig";
+static const char STR_ENTITLEMENT[] = "subscription_entitlement";
+static const char STR_CAMERA_CFG[] = "android_camera_video_recording";
 
 // --- Standalone SHA1 Implementation ---
 typedef struct {
@@ -95,127 +96,127 @@ static void sha1_final(uint8_t digest[20], SHA1_CTX *context) {
 
 // --- Helper Functions ---
 static size_t align_val(size_t total, size_t alignment, size_t position) {
-    size_t aligned = (position + alignment - 1) & ~(alignment - 1);[span_7](start_span)[span_7](end_span)
+    size_t aligned = (position + alignment - 1) & ~(alignment - 1);
     if (aligned > total) {
-        return 0x7FFFFFFF - 1;[span_8](start_span)[span_8](end_span)
+        return 0x7FFFFFFF - 1;
     }
-    return aligned;[span_9](start_span)[span_9](end_span)
+    return aligned;
 }
 
 static bool region_equals_ascii(const uint8_t* data, size_t data_len, size_t pos, const char* want, size_t want_len) {
-    if (pos < 0 || pos + want_len > data_len) {[span_10](start_span)[span_10](end_span)
-        return false;[span_11](start_span)[span_11](end_span)
+    if (pos + want_len > data_len) {
+        return false;
     }
-    return std::memcmp(data + pos, want, want_len) == 0;[span_12](start_span)[span_12](end_span)
+    return std::memcmp(data + pos, want, want_len) == 0;
 }
 
 static bool get_string_info(const uint8_t* data, size_t data_len, size_t small_string_table_pos, size_t overflow_table_pos, size_t storage_pos, size_t string_count, size_t idx, size_t& out_abs_pos, size_t& out_length, bool& out_is_utf16) {
-    if (idx >= string_count) return false;[span_13](start_span)[span_13](end_span)
-    uint32_t entry = *reinterpret_cast<const uint32_t*>(data + small_string_table_pos + idx * 4);[span_14](start_span)[span_14](end_span)
-    out_is_utf16 = (entry & 1) != 0;[span_15](start_span)[span_15](end_span)
-    if (out_is_utf16) return true;[span_16](start_span)[span_16](end_span)
+    if (idx >= string_count) return false;
+    uint32_t entry = *reinterpret_cast<const uint32_t*>(data + small_string_table_pos + idx * 4);
+    out_is_utf16 = (entry & 1) != 0;
+    if (out_is_utf16) return true;
     
-    size_t off = (entry >> 1) & 0x7FFFFF;[span_17](start_span)[span_17](end_span)
-    size_t length = (entry >> 24) & 0xFF;[span_18](start_span)[span_18](end_span)
-    if (length == 0xFF) {[span_19](start_span)[span_19](end_span)
-        uint32_t ov = *reinterpret_cast<const uint32_t*>(data + overflow_table_pos + off * 8);[span_20](start_span)[span_20](end_span)
-        length = *reinterpret_cast<const uint32_t*>(data + overflow_table_pos + off * 8 + 4);[span_21](start_span)[span_21](end_span)
-        out_abs_pos = storage_pos + ov;[span_22](start_span)[span_22](end_span)
+    size_t off = (entry >> 1) & 0x7FFFFF;
+    size_t length = (entry >> 24) & 0xFF;
+    if (length == 0xFF) {
+        uint32_t ov = *reinterpret_cast<const uint32_t*>(data + overflow_table_pos + off * 8);
+        length = *reinterpret_cast<const uint32_t*>(data + overflow_table_pos + off * 8 + 4);
+        out_abs_pos = storage_pos + ov;
     } else {
-        out_abs_pos = storage_pos + off;[span_23](start_span)[span_23](end_span)
+        out_abs_pos = storage_pos + off;
     }
-    return true;[span_24](start_span)[span_24](end_span)
+    return true;
 }
 
-// --- Main Patch Logic Translation ---
+// --- Main Patch Logic ---
 static bool patch_bundle(uint8_t* data, size_t size) {
     if (!data || size < 64) return false;
     LOGI("[*] Bắt đầu thực thi patch bundle tại địa chỉ %p, kích thước %zu", data, size);
 
-    uint32_t version = *reinterpret_cast<uint32_t*>(data + 8);[span_25](start_span)[span_25](end_span)
-    if (version != HERMES_VERSION) {[span_26](start_span)[span_26](end_span)
-        LOGW("[!] Cảnh báo: Hermes version %u != %u", version, HERMES_VERSION);[span_27](start_span)[span_27](end_span)
+    uint32_t version = *reinterpret_cast<uint32_t*>(data + 8);
+    if (version != HERMES_VERSION) {
+        LOGW("[!] Cảnh báo: Hermes version %u != %u", version, HERMES_VERSION);
     } else {
-        LOGI("[+] Hermes version đúng chuẩn: %u", version);[span_28](start_span)[span_28](end_span)
+        LOGI("[+] Hermes version đúng chuẩn: %u", version);
     }
 
-    uint32_t function_count = *reinterpret_cast<uint32_t*>(data + 40);[span_29](start_span)[span_29](end_span)
-    uint32_t string_kind_count = *reinterpret_cast<uint32_t*>(data + 44);[span_30](start_span)[span_30](end_span)
-    uint32_t identifier_count = *reinterpret_cast<uint32_t*>(data + 48);[span_31](start_span)[span_31](end_span)
-    uint32_t string_count = *reinterpret_cast<uint32_t*>(data + 52);[span_32](start_span)[span_32](end_span)
-    uint32_t overflow_count = *reinterpret_cast<uint32_t*>(data + 56);[span_33](start_span)[span_33](end_span)
-    uint32_t string_storage_size = *reinterpret_cast<uint32_t*>(data + 60);[span_34](start_span)[span_34](end_span)
+    uint32_t function_count = *reinterpret_cast<uint32_t*>(data + 40);
+    uint32_t string_kind_count = *reinterpret_cast<uint32_t*>(data + 44);
+    uint32_t identifier_count = *reinterpret_cast<uint32_t*>(data + 48);
+    uint32_t string_count = *reinterpret_cast<uint32_t*>(data + 52);
+    uint32_t overflow_count = *reinterpret_cast<uint32_t*>(data + 56);
+    uint32_t string_storage_size = *reinterpret_cast<uint32_t*>(data + 60);
 
-    LOGI("[*] functions=%u, strings=%u", function_count, string_count);[span_35](start_span)[span_35](end_span)
+    LOGI("[*] functions=%u, strings=%u", function_count, string_count);
 
-    size_t p = align_val(size, 32, 111);[span_36](start_span)[span_36](end_span)
-    size_t headers_start = p;[span_37](start_span)[span_37](end_span)
-    p = align_val(size, 4, p + function_count * 16);[span_38](start_span)[span_38](end_span)
-    p = align_val(size, 4, p + string_kind_count * 4);[span_39](start_span)[span_39](end_span)
-    p = align_val(size, 4, p + identifier_count * 4);[span_40](start_span)[span_40](end_span)
-    size_t small_string_table_pos = p;[span_41](start_span)[span_41](end_span)
-    p = align_val(size, 4, p + string_count * 4);[span_42](start_span)[span_42](end_span)
-    size_t overflow_table_pos = p;[span_43](start_span)[span_43](end_span)
-    p = align_val(size, 4, p + overflow_count * 8);[span_44](start_span)[span_44](end_span)
-    size_t storage_pos = p;[span_45](start_span)[span_45](end_span)
+    size_t p = align_val(size, 32, 111);
+    size_t headers_start = p;
+    p = align_val(size, 4, p + function_count * 16);
+    p = align_val(size, 4, p + string_kind_count * 4);
+    p = align_val(size, 4, p + identifier_count * 4);
+    size_t small_string_table_pos = p;
+    p = align_val(size, 4, p + string_count * 4);
+    size_t overflow_table_pos = p;
+    p = align_val(size, 4, p + overflow_count * 8);
+    size_t storage_pos = p;
 
-    if (p + string_storage_size > size) {[span_46](start_span)[span_46](end_span)
-        LOGE("[-] string storage vượt kích thước file");[span_47](start_span)[span_47](end_span)
-        return false;[span_48](start_span)[span_48](end_span)
+    if (p + string_storage_size > size) {
+        LOGE("[-] string storage vượt kích thước file");
+        return false;
     }
 
     // 1. Tìm subscription_entitlement
-    LOGI("[*] Đang tìm subscription_entitlement...");[span_49](start_span)[span_49](end_span)
+    LOGI("[*] Đang tìm subscription_entitlement...");
     int ent_id = -1;
     for (uint32_t i = 0; i < string_count; i++) {
         size_t abs_pos = 0, length = 0;
         bool is_utf16 = false;
         if (get_string_info(data, size, small_string_table_pos, overflow_table_pos, storage_pos, string_count, i, abs_pos, length, is_utf16)) {
-            if (is_utf16) continue;[span_50](start_span)[span_50](end_span)
-            if (length == std::strlen(STR_ENTITLEMENT) && region_equals_ascii(data, size, abs_pos, STR_ENTITLEMENT, length)) {[span_51](start_span)[span_51](end_span)
-                ent_id = i;[span_52](start_span)[span_52](end_span)
-                LOGI("[+] Tìm thấy entitlement id=%d", ent_id);[span_53](start_span)[span_53](end_span)
-                break;[span_54](start_span)[span_54](end_span)
+            if (is_utf16) continue;
+            if (length == std::strlen(STR_ENTITLEMENT) && region_equals_ascii(data, size, abs_pos, STR_ENTITLEMENT, length)) {
+                ent_id = i;
+                LOGI("[+] Tìm thấy entitlement id=%d", ent_id);
+                break;
             }
         }
     }
-    if (ent_id < 0) {[span_55](start_span)[span_55](end_span)
-        LOGE("[-] Không tìm thấy entitlement");[span_56](start_span)[span_56](end_span)
-        return false;[span_57](start_span)[span_57](end_span)
+    if (ent_id < 0) {
+        LOGE("[-] Không tìm thấy entitlement");
+        return false;
     }
 
     // 2. Quét hàm (functions scan)
-    LOGI("[*] Đang quét danh sách hàm...");[span_58](start_span)[span_58](end_span)
+    LOGI("[*] Đang quét danh sách hàm...");
     size_t badge_offset = (size_t)-1, badge_size = 0;
     size_t payments_offset = (size_t)-1, payments_size = 0;
     size_t camera_offset = (size_t)-1, camera_size = 0;
 
     for (uint32_t i = 0; i < function_count; i++) {
-        size_t base = headers_start + i * 16;[span_59](start_span)[span_59](end_span)
+        size_t base = headers_start + i * 16;
         if (base + 16 > size) break;
-        uint32_t w1 = *reinterpret_cast<uint32_t*>(data + base + 4);[span_60](start_span)[span_60](end_span)
-        if (((data[base + 15] >> 4) & 1) != 0) {[span_61](start_span)[span_61](end_span)
-            continue;[span_62](start_span)[span_62](end_span)
+        uint32_t w1 = *reinterpret_cast<uint32_t*>(data + base + 4);
+        if (((data[base + 15] >> 4) & 1) != 0) {
+            continue;
         }
-        uint32_t name_id = (w1 >> 15) & 0x1FFFF;[span_63](start_span)[span_63](end_span)
-        if (name_id >= string_count) continue;[span_64](start_span)[span_64](end_span)
+        uint32_t name_id = (w1 >> 15) & 0x1FFFF;
+        if (name_id >= string_count) continue;
 
         size_t abs_pos = 0, length = 0;
         bool is_utf16 = false;
         if (get_string_info(data, size, small_string_table_pos, overflow_table_pos, storage_pos, string_count, name_id, abs_pos, length, is_utf16)) {
-            if (is_utf16) continue;[span_65](start_span)[span_65](end_span)
-            uint32_t offset = *reinterpret_cast<uint32_t*>(data + base) & 0x1FFFFFF;[span_66](start_span)[span_66](end_span)
-            uint32_t size_fn = w1 & 0x7FFF;[span_67](start_span)[span_67](end_span)
+            if (is_utf16) continue;
+            uint32_t offset = *reinterpret_cast<uint32_t*>(data + base) & 0x1FFFFFF;
+            uint32_t size_fn = w1 & 0x7FFF;
 
-            if (badge_offset == (size_t)-1 && length == std::strlen(FN_BADGE) && region_equals_ascii(data, size, abs_pos, FN_BADGE, length)) {[span_68](start_span)[span_68](end_span)
-                badge_offset = offset; badge_size = size_fn;[span_69](start_span)[span_69](end_span)
-                LOGI("[+] doesUserHaveGoldBadge @ %zu", badge_offset);[span_70](start_span)[span_70](end_span)
-            } else if (payments_offset == (size_t)-1 && length == std::strlen(FN_PAYMENTS) && region_equals_ascii(data, size, abs_pos, FN_PAYMENTS, length)) {[span_71](start_span)[span_71](end_span)
-                payments_offset = offset; payments_size = size_fn;[span_72](start_span)[span_72](end_span)
-                LOGI("[+] PaymentsProvider @ %zu", payments_offset);[span_73](start_span)[span_73](end_span)
-            } else if (camera_offset == (size_t)-1 && length == std::strlen(FN_CAMERA) && region_equals_ascii(data, size, abs_pos, FN_CAMERA, length)) {[span_74](start_span)[span_74](end_span)
-                camera_offset = offset; camera_size = size_fn;[span_75](start_span)[span_75](end_span)
-                LOGI("[+] getAndroidCameraVideoRecordingConfig @ %zu", camera_offset);[span_76](start_span)[span_76](end_span)
+            if (badge_offset == (size_t)-1 && length == std::strlen(FN_BADGE) && region_equals_ascii(data, size, abs_pos, FN_BADGE, length)) {
+                badge_offset = offset; badge_size = size_fn;
+                LOGI("[+] doesUserHaveGoldBadge @ %zu", badge_offset);
+            } else if (payments_offset == (size_t)-1 && length == std::strlen(FN_PAYMENTS) && region_equals_ascii(data, size, abs_pos, FN_PAYMENTS, length)) {
+                payments_offset = offset; payments_size = size_fn;
+                LOGI("[+] PaymentsProvider @ %zu", payments_offset);
+            } else if (camera_offset == (size_t)-1 && length == std::strlen(FN_CAMERA) && region_equals_ascii(data, size, abs_pos, FN_CAMERA, length)) {
+                camera_offset = offset; camera_size = size_fn;
+                LOGI("[+] getAndroidCameraVideoRecordingConfig @ %zu", camera_offset);
             }
         }
         if (badge_offset != (size_t)-1 && payments_offset != (size_t)-1 && camera_offset != (size_t)-1) {
@@ -223,54 +224,54 @@ static bool patch_bundle(uint8_t* data, size_t size) {
         }
     }
 
-    if (badge_offset == (size_t)-1 || payments_offset == (size_t)-1) {[span_77](start_span)[span_77](end_span)
-        LOGE("[-] Thiếu hàm badge hoặc payments");[span_78](start_span)[span_78](end_span)
-        return false;[span_79](start_span)[span_79](end_span)
+    if (badge_offset == (size_t)-1 || payments_offset == (size_t)-1) {
+        LOGE("[-] Thiếu hàm badge hoặc payments");
+        return false;
     }
 
     // 3. Patch doesUserHaveGoldBadge
-    LOGI("[*] Đang patch doesUserHaveGoldBadge...");[span_80](start_span)[span_80](end_span)
-    if (badge_size < 4 || badge_offset + badge_size > size || data[badge_offset + badge_size - 2] != 0x5C) {[span_81](start_span)[span_81](end_span)
-        LOGE("[-] Cấu trúc badge lỗi hoặc vượt giới hạn");[span_82](start_span)[span_82](end_span)
-        return false;[span_83](start_span)[span_83](end_span)
+    LOGI("[*] Đang patch doesUserHaveGoldBadge...");
+    if (badge_size < 4 || badge_offset + badge_size > size || data[badge_offset + badge_size - 2] != 0x5C) {
+        LOGE("[-] Cấu trúc badge lỗi hoặc vượt giới hạn");
+        return false;
     }
-    uint8_t ret_reg = data[badge_offset + badge_size - 1];[span_84](start_span)[span_84](end_span)
-    data[badge_offset] = 0x78;[span_85](start_span)[span_85](end_span)
-    data[badge_offset + 1] = ret_reg;[span_86](start_span)[span_86](end_span)
-    data[badge_offset + 2] = 0x5C;[span_87](start_span)[span_87](end_span)
-    data[badge_offset + 3] = ret_reg;[span_88](start_span)[span_88](end_span)
-    LOGI("[+] Đã patch badge thành công (ret_reg=%u)", ret_reg);[span_89](start_span)[span_89](end_span)
+    uint8_t ret_reg = data[badge_offset + badge_size - 1];
+    data[badge_offset] = 0x78;
+    data[badge_offset + 1] = ret_reg;
+    data[badge_offset + 2] = 0x5C;
+    data[badge_offset + 3] = ret_reg;
+    LOGI("[+] Đã patch badge thành công (ret_reg=%u)", ret_reg);
 
     // 4. Patch PaymentsProvider
-    LOGI("[*] Đang patch PaymentsProvider...");[span_90](start_span)[span_90](end_span)
-    uint16_t id_le = static_cast<uint16_t>(ent_id);[span_91](start_span)[span_91](end_span)
+    LOGI("[*] Đang patch PaymentsProvider...");
+    uint16_t id_le = static_cast<uint16_t>(ent_id);
     bool patched_pay = false;
     if (payments_offset + payments_size <= size) {
-        for (size_t i = 0; i + 12 <= payments_size; i++) {[span_92](start_span)[span_92](end_span)
+        for (size_t i = 0; i + 12 <= payments_size; i++) {
             size_t pos = payments_offset + i;
             uint16_t val = *reinterpret_cast<uint16_t*>(data + pos + 4);
-            if (val == id_le && data[pos + 6] == 0x0B && data[pos + 7] == data[pos + 8] &&[span_93](start_span)[span_93](end_span)
-                data[pos + 9] == 0x0B && data[pos + 11] == data[pos + 7]) {[span_94](start_span)[span_94](end_span)
-                uint8_t d1 = data[pos + 7], d2 = data[pos + 10];[span_95](start_span)[span_95](end_span)
-                size_t at = pos + 6;[span_96](start_span)[span_96](end_span)
-                data[at] = 0x78; data[at+1] = d2;[span_97](start_span)[span_97](end_span)
-                data[at+2] = 0x79; data[at+3] = d1;[span_98](start_span)[span_98](end_span)
-                data[at+4] = 0x78; data[at+5] = d2;[span_99](start_span)[span_99](end_span)
-                LOGI("[+] PaymentsProvider patched @ %zu", at);[span_100](start_span)[span_100](end_span)
-                patched_pay = true;[span_101](start_span)[span_101](end_span)
-                break;[span_102](start_span)[span_102](end_span)
+            if (val == id_le && data[pos + 6] == 0x0B && data[pos + 7] == data[pos + 8] &&
+                data[pos + 9] == 0x0B && data[pos + 11] == data[pos + 7]) {
+                uint8_t d1 = data[pos + 7], d2 = data[pos + 10];
+                size_t at = pos + 6;
+                data[at] = 0x78; data[at+1] = d2;
+                data[at+2] = 0x79; data[at+3] = d1;
+                data[at+4] = 0x78; data[at+5] = d2;
+                LOGI("[+] PaymentsProvider patched @ %zu", at);
+                patched_pay = true;
+                break;
             }
         }
     }
-    if (!patched_pay) {[span_103](start_span)[span_103](end_span)
-        LOGE("[-] Không tìm thấy pattern PaymentsProvider");[span_104](start_span)[span_104](end_span)
-        return false;[span_105](start_span)[span_105](end_span)
+    if (!patched_pay) {
+        LOGE("[-] Không tìm thấy pattern PaymentsProvider");
+        return false;
     }
 
-    // 5. Patch maximumDuration (scan toàn file)
-    LOGI("[*] Đang patch maximumDuration...");[span_106](start_span)[span_106](end_span)
-    uint32_t candidates[] = {2500, 10000};[span_107](start_span)[span_107](end_span)
-    uint32_t new_val = 2147000000;[span_108](start_span)[span_108](end_span)
+    // 5. Patch maximumDuration
+    LOGI("[*] Đang patch maximumDuration...");
+    uint32_t candidates[] = {2500, 10000};
+    uint32_t new_val = 2147000000;
     int patched_dur_count = 0;
     for (uint32_t target_val : candidates) {
         uint8_t old_b[4], new_b[4];
@@ -279,65 +280,64 @@ static bool patch_bundle(uint8_t* data, size_t size) {
 
         size_t start = 0;
         while (start < size) {
-            // Tìm kiếm chuỗi byte
             const uint8_t* found_ptr = std::search(data + start, data + size, old_b, old_b + 4);
             if (found_ptr == data + size) break;
             size_t idx = found_ptr - data;
 
-            size_t left = (idx >= 64) ? idx - 64 : 0;[span_109](start_span)[span_109](end_span)
-            size_t right = (idx + 4 + 64 <= size) ? idx + 4 + 64 : size;[span_110](start_span)[span_110](end_span)
+            size_t left = (idx >= 64) ? idx - 64 : 0;
+            size_t right = (idx + 4 + 64 <= size) ? idx + 4 + 64 : size;
 
-            uint32_t m_i32 = 720;[span_111](start_span)[span_111](end_span)
-            float m_f32 = 720.0f;[span_112](start_span)[span_112](end_span)
-            double m_f64 = 720.0;[span_113](start_span)[span_113](end_span)
+            uint32_t m_i32 = 720;
+            float m_f32 = 720.0f;
+            double m_f64 = 720.0;
             bool has_marker = false;
             for (size_t m = left; m + 4 <= right; m++) {
-                if (std::memcmp(data + m, &m_i32, 4) == 0 ||[span_114](start_span)[span_114](end_span)
-                    std::memcmp(data + m, &m_f32, 4) == 0 ||[span_115](start_span)[span_115](end_span)
-                    (m + 8 <= right && std::memcmp(data + m, &m_f64, 8) == 0)) {[span_116](start_span)[span_116](end_span)
-                    has_marker = true;[span_117](start_span)[span_117](end_span)
-                    break;[span_118](start_span)[span_118](end_span)
+                if (std::memcmp(data + m, &m_i32, 4) == 0 ||
+                    std::memcmp(data + m, &m_f32, 4) == 0 ||
+                    (m + 8 <= right && std::memcmp(data + m, &m_f64, 8) == 0)) {
+                    has_marker = true;
+                    break;
                 }
             }
-            if (has_marker) {[span_119](start_span)[span_119](end_span)
-                std::memcpy(data + idx, new_b, 4);[span_120](start_span)[span_120](end_span)
-                patched_dur_count++;[span_121](start_span)[span_121](end_span)
-                LOGI("[+] duration patched value %u @ %zu", target_val, idx);[span_122](start_span)[span_122](end_span)
+            if (has_marker) {
+                std::memcpy(data + idx, new_b, 4);
+                patched_dur_count++;
+                LOGI("[+] duration patched value %u @ %zu", target_val, idx);
             }
-            start = idx + 1;[span_123](start_span)[span_123](end_span)
+            start = idx + 1;
         }
     }
-    LOGI("[+] Tổng duration patched: %d", patched_dur_count);[span_124](start_span)[span_124](end_span)
+    LOGI("[+] Tổng duration patched: %d", patched_dur_count);
 
     // 6. Bypass remote config camera
-    LOGI("[*] Bypass remote config android_camera_video_recording...");[span_125](start_span)[span_125](end_span)
+    LOGI("[*] Bypass remote config android_camera_video_recording...");
     bool found_cam = false;
     for (uint32_t i = 0; i < string_count; i++) {
         size_t abs_pos = 0, length = 0;
         bool is_utf16 = false;
         if (get_string_info(data, size, small_string_table_pos, overflow_table_pos, storage_pos, string_count, i, abs_pos, length, is_utf16)) {
-            if (is_utf16) continue;[span_126](start_span)[span_126](end_span)
-            if (length == std::strlen(STR_CAMERA_CFG) && region_equals_ascii(data, size, abs_pos, STR_CAMERA_CFG, length)) {[span_127](start_span)[span_127](end_span)
-                LOGI("[+] Tìm thấy string camera config @ %zu (id=%u)", abs_pos, i);[span_128](start_span)[span_128](end_span)
-                std::memset(data + abs_pos, 0, length);[span_129](start_span)[span_129](end_span)
-                LOGI("[+] Đã xóa nội dung string (force falsy)");[span_130](start_span)[span_130](end_span)
-                found_cam = true;[span_131](start_span)[span_131](end_span)
-                break;[span_132](start_span)[span_132](end_span)
+            if (is_utf16) continue;
+            if (length == std::strlen(STR_CAMERA_CFG) && region_equals_ascii(data, size, abs_pos, STR_CAMERA_CFG, length)) {
+                LOGI("[+] Tìm thấy string camera config @ %zu (id=%u)", abs_pos, i);
+                std::memset(data + abs_pos, 0, length);
+                LOGI("[+] Đã xóa nội dung string (force falsy)");
+                found_cam = true;
+                break;
             }
         }
     }
-    if (!found_cam) {[span_133](start_span)[span_133](end_span)
-        LOGW("[-] Không tìm thấy string remote config camera");[span_134](start_span)[span_134](end_span)
+    if (!found_cam) {
+        LOGW("[-] Không tìm thấy string remote config camera");
     }
 
     // 7. Cập nhật SHA1 ở 20 byte cuối
-    LOGI("[*] Cập nhật SHA1 checksum...");[span_135](start_span)[span_135](end_span)
+    LOGI("[*] Cập nhật SHA1 checksum...");
     if (size >= 20) {
         SHA1_CTX ctx;
         sha1_init(&ctx);
         sha1_update(&ctx, data, size - 20);
-        sha1_final(data + size - 20, &ctx);[span_136](start_span)[span_136](end_span)
-        LOGI("[+] SHA1 updated thành công");[span_137](start_span)[span_137](end_span)
+        sha1_final(data + size - 20, &ctx);
+        LOGI("[+] SHA1 updated thành công");
     }
 
     return true;
@@ -360,7 +360,6 @@ static void check_and_patch_mapping(void* ptr, size_t length) {
         if (*magic_ptr == HERMES_MAGIC) {
             LOGI("Hermes bundle caught via mmap! Address: %p, Size: %zu", ptr, length);
             
-            // Cấp quyền ghi bộ nhớ
             uintptr_t page_size = sysconf(_SC_PAGESIZE);
             uintptr_t start_page = (uintptr_t)ptr & ~(page_size - 1);
             size_t len_page = (length + ((uintptr_t)ptr - start_page) + page_size - 1) & ~(page_size - 1);
@@ -371,7 +370,7 @@ static void check_and_patch_mapping(void* ptr, size_t length) {
 
             if (patch_bundle((uint8_t*)ptr, length)) {
                 g_bundle_patched = true;
-                LOGI("Bundle successfully patched on the fly with all Python features!");
+                LOGI("Bundle successfully patched on the fly with all features!");
             } else {
                 LOGE("Failed to apply full patches on Hermes bundle.");
             }
