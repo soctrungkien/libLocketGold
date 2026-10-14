@@ -1,393 +1,324 @@
 #include <jni.h>
 #include <android/log.h>
-#include <pthread.h>
-#include <map>
-#include <set>
+#include <unistd.h>
+#include <sys/mman.h>
 #include <cstring>
-#include <sstream>
-#include "locket_gold.h"
-#include "hook_manager.h"
+#include <cstdint>
+#include <vector>
+#include <fstream>
+#include <string>
 
-#define TAG "LocketGoldNative"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, TAG, __VA_ARGS__)
+#define LOG_TAG "LocketGold"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// ==================== SMALI BYTECODE CONSTANTS ====================
+static constexpr uint32_t HERMES_VERSION = 96;
+static constexpr uint32_t HERMES_MAGIC = 0x03BC1FC6;
 
-// Video configuration from Smali - decoded JSON
-static const char* VIDEO_CONFIG_JSON = "{\n"
-    "  \"display_mode\": \"toggle\",\n"
-    "  \"default\": {\n"
-    "    \"maximum_duration\": 2500,\n"
-    "    \"size\": 720,\n"
-    "    \"file_type\": \"mp4\",\n"
-    "    \"video_codec\": \"h265\"\n"
-    "  },\n"
-    "  \"gold\": {\n"
-    "    \"maximum_duration\": 10000,\n"
-    "    \"size\": 720,\n"
-    "    \"file_type\": \"mp4\",\n"
-    "    \"video_codec\": \"h265\"\n"
-    "  }\n"
-    "}";
-
-// Feature gates from Smali
-static const char* FEATURE_GATES_JSON = "{\n"
-    "  \"video\": {\"enabled\": true, \"gold_only\": false},\n"
-    "  \"longer_video\": {\"enabled\": true, \"gold_only\": false},\n"
-    "  \"video_recording\": {\"enabled\": true, \"gold_only\": false},\n"
-    "  \"unlimited_friends\": {\"enabled\": true, \"gold_only\": false},\n"
-    "  \"remove_ads\": {\"enabled\": true, \"gold_only\": false},\n"
-    "  \"camera_theme\": {\"enabled\": true, \"gold_only\": false},\n"
-    "  \"app_icon\": {\"enabled\": true, \"gold_only\": false}\n"
-    "}";
-
-// Global state
-static HookManager* g_hook_manager = nullptr;
-static pthread_mutex_t g_init_lock = PTHREAD_MUTEX_INITIALIZER;
-static bool g_initialized = false;
-static std::set<std::string> g_hooked_classes;
-static std::string g_patched_bundle_path = "";
-static bool g_js_bundle_file_hooked = false;
-
-// Library initialization when first .so is loaded
-__attribute__((constructor))
-void native_init() {
-    LOGI("LocketGoldNative library loaded");
-    LOGI("Hermes v%d bytecode patching enabled", HERMES_VERSION_SUPPORTED);
-    LOGI("Target: %s", TARGET_PACKAGE);
+static bool unprotect(void* addr, size_t len) {
+    uintptr_t page = (uintptr_t)addr & \~(getpagesize() - 1);
+    size_t size = ((uintptr_t)addr + len - page + getpagesize() - 1) & \~(getpagesize() - 1);
+    return mprotect((void*)page, size, PROT_READ | PROT_WRITE | PROT_EXEC) == 0;
 }
 
-/**
- * JNI_OnLoad: Called when library is loaded via System.loadLibrary
- * Initialize Dobby and prepare for hooking
- */
-JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
-    JNIEnv* env = nullptr;
-    if (vm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-        LOGE("Failed to get JNIEnv");
-        return JNI_ERR;
+static bool protect(void* addr, size_t len) {
+    uintptr_t page = (uintptr_t)addr & \~(getpagesize() - 1);
+    size_t size = ((uintptr_t)addr + len - page + getpagesize() - 1) & \~(getpagesize() - 1);
+    return mprotect((void*)page, size, PROT_READ | PROT_EXEC) == 0;
+}
+
+static uint32_t align(uint32_t total, uint32_t alignment, uint32_t pos) {
+    uint32_t aligned = (pos + alignment - 1) & \~(alignment - 1);
+    if (aligned > total) return 0x7FFFFFFE;
+    return aligned;
+}
+
+static bool region_eq(const uint8_t* data, size_t size, uint32_t pos, const char* want) {
+    size_t len = strlen(want);
+    if (pos + len > size) return false;
+    return memcmp(data + pos, want, len) == 0;
+}
+
+struct StringInfo {
+    uint32_t abs_pos;
+    uint32_t length;
+    bool is_utf16;
+};
+
+static StringInfo get_string_info(const uint8_t* data, size_t size,
+                                  uint32_t small_tbl, uint32_t overflow_tbl,
+                                  uint32_t storage, uint32_t str_count, uint32_t idx) {
+    StringInfo info{0, 0, false};
+    if (idx >= str_count) return info;
+
+    uint32_t entry = *(uint32_t*)(data + small_tbl + idx * 4);
+    bool is_utf16 = entry & 1;
+    if (is_utf16) {
+        info.is_utf16 = true;
+        return info;
     }
-    
-    LOGI("JNI_OnLoad: Initializing Dobby hook infrastructure");
-    // Dobby initialization happens in initHooks(), not here
+
+    uint32_t off = (entry >> 1) & 0x7FFFFF;
+    uint32_t length = (entry >> 24) & 0xFF;
+
+    if (length == 0xFF) {
+        uint32_t ov = *(uint32_t*)(data + overflow_tbl + off * 8);
+        length = *(uint32_t*)(data + overflow_tbl + off * 8 + 4);
+        info.abs_pos = storage + ov;
+    } else {
+        info.abs_pos = storage + off;
+    }
+    info.length = length;
+    return info;
+}
+
+static bool patch_bundle(uint8_t* data, size_t size) {
+    if (size < 128) return false;
+    if (*(uint32_t*)data != HERMES_MAGIC) return false;
+
+    uint32_t version = *(uint32_t*)(data + 8);
+    if (version != HERMES_VERSION) {
+        LOGI("Hermes version %u (expected %u)", version, HERMES_VERSION);
+    }
+
+    uint32_t function_count     = *(uint32_t*)(data + 40);
+    uint32_t string_kind_count  = *(uint32_t*)(data + 44);
+    uint32_t identifier_count   = *(uint32_t*)(data + 48);
+    uint32_t string_count       = *(uint32_t*)(data + 52);
+    uint32_t overflow_count     = *(uint32_t*)(data + 56);
+    uint32_t string_storage_size= *(uint32_t*)(data + 60);
+
+    LOGI("functions=%u strings=%u", function_count, string_count);
+
+    uint32_t p = align(size, 32, 111);
+    uint32_t headers_start = p;
+    p = align(size, 4, p + function_count * 16);
+    p = align(size, 4, p + string_kind_count * 4);
+    p = align(size, 4, p + identifier_count * 4);
+    uint32_t small_string_table_pos = p;
+    p = align(size, 4, p + string_count * 4);
+    uint32_t overflow_table_pos = p;
+    p = align(size, 4, p + overflow_count * 8);
+    uint32_t storage_pos = p;
+
+    if (p + string_storage_size > size) {
+        LOGE("string storage overflow");
+        return false;
+    }
+
+    // 1. tìm subscription_entitlement
+    int32_t ent_id = -1;
+    for (uint32_t i = 0; i < string_count; i++) {
+        auto info = get_string_info(data, size, small_string_table_pos, overflow_table_pos, storage_pos, string_count, i);
+        if (info.is_utf16 || info.length == 0) continue;
+        if (info.length == 23 && region_eq(data, size, info.abs_pos, "subscription_entitlement")) {
+            ent_id = (int32_t)i;
+            LOGI("entitlement id=%d", ent_id);
+            break;
+        }
+    }
+    if (ent_id < 0) {
+        LOGE("entitlement not found");
+        return false;
+    }
+
+    // 2. tìm 3 hàm
+    int32_t badge_off = -1, badge_size = -1;
+    int32_t pay_off = -1, pay_size = -1;
+    int32_t cam_off = -1, cam_size = -1;
+
+    for (uint32_t i = 0; i < function_count; i++) {
+        uint32_t base = headers_start + i * 16;
+        uint32_t w1 = *(uint32_t*)(data + base + 4);
+        if (((data[base + 15] >> 4) & 1) != 0) continue;
+
+        uint32_t name_id = (w1 >> 15) & 0x1FFFF;
+        if (name_id >= string_count) continue;
+
+        auto info = get_string_info(data, size, small_string_table_pos, overflow_table_pos, storage_pos, string_count, name_id);
+        if (info.is_utf16 || info.length == 0) continue;
+
+        uint32_t offset = *(uint32_t*)(data + base) & 0x1FFFFFF;
+        uint32_t fsize  = w1 & 0x7FFF;
+
+        if (badge_off < 0 && info.length == 20 && region_eq(data, size, info.abs_pos, "doesUserHaveGoldBadge")) {
+            badge_off = offset; badge_size = fsize;
+            LOGI("doesUserHaveGoldBadge @ %u", badge_off);
+        }
+        else if (pay_off < 0 && info.length == 16 && region_eq(data, size, info.abs_pos, "PaymentsProvider")) {
+            pay_off = offset; pay_size = fsize;
+            LOGI("PaymentsProvider @ %u", pay_off);
+        }
+        else if (cam_off < 0 && info.length == 35 && region_eq(data, size, info.abs_pos, "getAndroidCameraVideoRecordingConfig")) {
+            cam_off = offset; cam_size = fsize;
+            LOGI("getAndroidCameraVideoRecordingConfig @ %u", cam_off);
+        }
+
+        if (badge_off >= 0 && pay_off >= 0 && cam_off >= 0) break;
+    }
+
+    if (badge_off < 0 || pay_off < 0) {
+        LOGE("missing badge/payments");
+        return false;
+    }
+
+    // 3. patch badge → force true
+    if (badge_size < 4 || data[badge_off + badge_size - 2] != 0x5C) {
+        LOGE("badge structure invalid");
+        return false;
+    }
+    uint8_t ret_reg = data[badge_off + badge_size - 1];
+    if (!unprotect(data + badge_off, 4)) return false;
+    data[badge_off + 0] = 0x78;
+    data[badge_off + 1] = ret_reg;
+    data[badge_off + 2] = 0x5C;
+    data[badge_off + 3] = ret_reg;
+    protect(data + badge_off, 4);
+    LOGI("badge patched (reg=%u)", ret_reg);
+
+    // 4. patch PaymentsProvider
+    uint8_t id_le[2] = {(uint8_t)(ent_id & 0xFF), (uint8_t)((ent_id >> 8) & 0xFF)};
+    bool patched_pay = false;
+    for (int i = 0; i < pay_size - 12; i++) {
+        if (data[pay_off + i + 4] == id_le[0] && data[pay_off + i + 5] == id_le[1] &&
+            data[pay_off + i + 6] == 0x0B &&
+            data[pay_off + i + 7] == data[pay_off + i + 8] &&
+            data[pay_off + i + 9] == 0x0B &&
+            data[pay_off + i + 11] == data[pay_off + i + 7]) {
+
+            uint8_t d1 = data[pay_off + i + 7];
+            uint8_t d2 = data[pay_off + i + 10];
+            uint32_t at = pay_off + i + 6;
+
+            if (!unprotect(data + at, 6)) return false;
+            data[at + 0] = 0x78;
+            data[at + 1] = d2;
+            data[at + 2] = 0x79;
+            data[at + 3] = d1;
+            data[at + 4] = 0x78;
+            data[at + 5] = d2;
+            protect(data + at, 6);
+            LOGI("PaymentsProvider patched @ %u", at);
+            patched_pay = true;
+            break;
+        }
+    }
+    if (!patched_pay) {
+        LOGE("PaymentsProvider pattern not found");
+        return false;
+    }
+
+    // 5. patch duration
+    uint32_t candidates[][2] = {{2500, 2147000000}, {10000, 2147000000}};
+    uint32_t size_markers[] = {720};
+    int patched = 0;
+
+    for (auto& c : candidates) {
+        uint32_t old_v = c[0], new_v = c[1];
+        for (size_t idx = 0; idx + 4 <= size; idx++) {
+            if (*(uint32_t*)(data + idx) != old_v) continue;
+
+            bool near = false;
+            for (int k = -64; k < 64; k++) {
+                if ((int)idx + k < 0 || idx + k + 4 > size) continue;
+                if (*(uint32_t*)(data + idx + k) == 720) {
+                    near = true;
+                    break;
+                }
+            }
+            if (near) {
+                if (unprotect(data + idx, 4)) {
+                    *(uint32_t*)(data + idx) = new_v;
+                    protect(data + idx, 4);
+                    patched++;
+                    LOGI("duration %u → %u @ %zu", old_v, new_v, idx);
+                }
+            }
+        }
+    }
+    LOGI("duration patched: %d", patched);
+
+    // 6. null android_camera_video_recording
+    for (uint32_t i = 0; i < string_count; i++) {
+        auto info = get_string_info(data, size, small_string_table_pos, overflow_table_pos, storage_pos, string_count, i);
+        if (info.is_utf16 || info.length == 0) continue;
+        if (info.length == 31 && region_eq(data, size, info.abs_pos, "android_camera_video_recording")) {
+            if (unprotect(data + info.abs_pos, info.length)) {
+                memset(data + info.abs_pos, 0, info.length);
+                protect(data + info.abs_pos, info.length);
+                LOGI("camera string nulled @ %u", info.abs_pos);
+            }
+            break;
+        }
+    }
+
+    // 7. update SHA1 (last 20 bytes)
+    // (bỏ qua nếu không cần, vì runtime không check)
+
+    LOGI("Full patch done");
+    return true;
+}
+
+// Tìm Hermes bundle trong memory
+static void* find_hermes_bundle(size_t* out_size) {
+    std::ifstream maps("/proc/self/maps");
+    std::string line;
+    while (std::getline(maps, line)) {
+        // Tìm vùng r-xp hoặc r--p có size lớn
+        uintptr_t start = 0, end = 0;
+        char perms[8] = {};
+        if (sscanf(line.c_str(), "%lx-%lx %7s", &start, &end, perms) != 3) continue;
+        if (perms[0] != 'r') continue;
+
+        size_t sz = end - start;
+        if (sz < 0x100000 || sz > 0x20000000) continue; // 1MB \~ 512MB
+
+        uint8_t* p = (uint8_t*)start;
+        // Check magic
+        if (*(uint32_t*)p == HERMES_MAGIC) {
+            *out_size = sz;
+            return p;
+        }
+        // Đôi khi magic nằm sâu hơn
+        for (size_t off = 0; off + 4 < sz && off < 0x100000; off += 0x1000) {
+            if (*(uint32_t*)(p + off) == HERMES_MAGIC) {
+                *out_size = sz - off;
+                return p + off;
+            }
+        }
+    }
+    return nullptr;
+}
+
+static void do_patch() {
+    size_t size = 0;
+    uint8_t* bundle = (uint8_t*)find_hermes_bundle(&size);
+    if (!bundle) {
+        LOGE("Hermes bundle not found in memory");
+        return;
+    }
+    LOGI("Hermes bundle @ %p size=%zu", bundle, size);
+
+    if (!unprotect(bundle, size)) {
+        LOGE("unprotect failed");
+        return;
+    }
+
+    bool ok = patch_bundle(bundle, size);
+    protect(bundle, size);
+
+    if (ok) LOGI("All features patched");
+    else LOGE("Patch failed");
+}
+
+extern "C" JNIEXPORT jint JNICALL
+JNI_OnLoad(JavaVM* vm, void* reserved) {
+    LOGI("Loaded");
+    do_patch();
     return JNI_VERSION_1_6;
 }
 
-// ==================== SMALI-DERIVED HELPER FUNCTIONS ====================
-
-/**
- * Mutate user JSON string to inject gold subscription
- * From: HookMain.mutateUserJsonString() bytecode
- * Replaces "subscription_entitlement": "free" with "subscription_entitlement": "locket_gold"
- */
-static std::string mutate_user_json_string(const std::string& json_str) {
-    if (json_str.empty()) return json_str;
-    
-    std::string result = json_str;
-    size_t pos = 0;
-    
-    // Look for subscription_entitlement pattern
-    const char* pattern = "\"subscription_entitlement\"";
-    const char* free_val = "\"free\"";
-    const char* gold_val = "\"locket_gold\"";
-    
-    while ((pos = result.find(pattern, pos)) != std::string::npos) {
-        // Find the next quote after the key
-        size_t value_start = result.find(":", pos);
-        if (value_start == std::string::npos) break;
-        
-        size_t quote_start = result.find("\"", value_start);
-        if (quote_start == std::string::npos) break;
-        
-        size_t quote_end = result.find("\"", quote_start + 1);
-        if (quote_end == std::string::npos) break;
-        
-        // Replace the value
-        std::string old_value = result.substr(quote_start, quote_end - quote_start + 1);
-        result.replace(quote_start, quote_end - quote_start + 1, gold_val);
-        
-        LOGD("Mutated: %s → %s", old_value.c_str(), gold_val);
-        pos = quote_start + strlen(gold_val);
-    }
-    
-    // Also inject badge marker
-    pos = 0;
-    const char* badge_pattern = "\"badge\"";
-    const char* badge_true = "\"true\"";
-    
-    while ((pos = result.find(badge_pattern, pos)) != std::string::npos) {
-        size_t value_start = result.find(":", pos);
-        if (value_start == std::string::npos) break;
-        
-        size_t quote_start = result.find("\"", value_start);
-        if (quote_start == std::string::npos) break;
-        
-        size_t quote_end = result.find("\"", quote_start + 1);
-        if (quote_end == std::string::npos) break;
-        
-        result.replace(quote_start, quote_end - quote_start + 1, badge_true);
-        pos = quote_start + strlen(badge_true);
-    }
-    
-    return result;
+extern "C" JNIEXPORT void JNICALL
+Java_com_gold_Hook_init(JNIEnv* env, jclass clazz) {
+    do_patch();
 }
-
-/**
- * Inject gold configuration values into Maps
- * From: HookMain.injectGoldConfigValues() and putRemoteConfigValue()
- * Adds android_gold_subscription_override and feature gates
- */
-static void inject_gold_config_values(JNIEnv* env, jobject map) {
-    if (!map) return;
-    
-    // Get Map class
-    jclass map_class = env->GetObjectClass(map);
-    jmethodID put_method = env->GetMethodID(map_class, "put",
-        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
-    
-    if (!put_method) {
-        LOGE("Could not find Map.put() method");
-        return;
-    }
-    
-    // Inject gold override key
-    jstring key = env->NewStringUTF(GOLD_OVERRIDE_KEY);
-    jstring value = env->NewStringUTF("true");
-    env->CallObjectMethod(map, put_method, key, value);
-    env->DeleteLocalRef(key);
-    env->DeleteLocalRef(value);
-    
-    LOGD("Injected %s → true into config map", GOLD_OVERRIDE_KEY);
-}
-
-/**
- * initHooks: Main entry point called from target app context
- * - Must be called from the target process (com.locket.Locket)
- * - Sets up all Dobby hooks
- * - Integrates Smali bytecode analysis
- *
- * Called via JNI from wrapper app or injected code
- */
-JNIEXPORT void JNICALL Java_com_locket_hook_LocketHookLib_initHooks(
-    JNIEnv* env, jclass clazz, jstring jTargetPackage) {
-    
-    pthread_mutex_lock(&g_init_lock);
-    
-    if (g_initialized) {
-        pthread_mutex_unlock(&g_init_lock);
-        LOGI("Hooks already initialized");
-        return;
-    }
-    
-    const char* target_pkg = env->GetStringUTFChars(jTargetPackage, nullptr);
-    LOGI("======================================");
-    LOGI("Initializing Locket Gold hooks");
-    LOGI("Target: %s", target_pkg);
-    LOGI("Hermes: v%d bytecode patching", HERMES_VERSION_SUPPORTED);
-    LOGI("======================================");
-    
-    try {
-        // Create and initialize hook manager
-        g_hook_manager = new HookManager();
-        
-        if (!g_hook_manager->initialize()) {
-            LOGE("Failed to initialize hook manager");
-            delete g_hook_manager;
-            g_hook_manager = nullptr;
-            env->ReleaseStringUTFChars(jTargetPackage, target_pkg);
-            pthread_mutex_unlock(&g_init_lock);
-            return;
-        }
-        
-        // Install hooks in order of priority (from Smali analysis)
-        LOGI(">>> Installing Hermes bundle patcher (Smali: HookMain._17)");
-        if (!g_hook_manager->hook_hermes()) {
-            LOGE("Hermes hook failed (non-critical, may not be present)");
-        }
-        
-        LOGI(">>> Installing Firebase Remote Config hook (Smali: HookMain._10)");
-        if (!g_hook_manager->hook_firebase_config()) {
-            LOGE("Firebase Config hook failed (non-critical)");
-        }
-        
-        LOGI(">>> Installing Firestore hook (Smali: HookMain._11)");
-        if (!g_hook_manager->hook_firestore()) {
-            LOGE("Firestore hook failed (non-critical)");
-        }
-        
-        LOGI(">>> Installing MMKV hook (Smali: HookMain._13)");
-        if (!g_hook_manager->hook_mmkv()) {
-            LOGE("MMKV hook failed (non-critical)");
-        }
-        
-        LOGI(">>> Installing React Native Networking hook (Smali: HookMain._12)");
-        if (!g_hook_manager->hook_networking()) {
-            LOGE("Networking hook failed (non-critical)");
-        }
-        
-        LOGI(">>> Installing RevenueCat hook (Smali: HookMain._14, _15)");
-        if (!g_hook_manager->hook_revenuecat()) {
-            LOGE("RevenueCat hook failed (non-critical)");
-        }
-        
-        g_initialized = true;
-        LOGI("======================================");
-        LOGI("✓ All hooks initialized successfully");
-        LOGI("✓ Video config injected");
-        LOGI("✓ Feature gates enabled");
-        LOGI("✓ Gold subscription active");
-        LOGI("======================================");
-        
-    } catch (const std::exception& e) {
-        LOGE("Exception during initialization: %s", e.what());
-        if (g_hook_manager) {
-            delete g_hook_manager;
-            g_hook_manager = nullptr;
-        }
-    }
-    
-    env->ReleaseStringUTFChars(jTargetPackage, target_pkg);
-    pthread_mutex_unlock(&g_init_lock);
-}
-
-/**
- * cleanup: Uninstall all hooks (optional)
- */
-JNIEXPORT void JNICALL Java_com_locket_hook_LocketHookLib_cleanup(
-    JNIEnv* env, jclass clazz) {
-    
-    pthread_mutex_lock(&g_init_lock);
-    
-    if (g_hook_manager) {
-        LOGI("Cleaning up hooks...");
-        delete g_hook_manager;
-        g_hook_manager = nullptr;
-        g_initialized = false;
-        LOGI("Cleanup complete");
-    }
-    
-    pthread_mutex_unlock(&g_init_lock);
-}
-
-/**
- * getHookStatus: Return initialization status
- */
-JNIEXPORT jboolean JNICALL Java_com_locket_hook_LocketHookLib_isInitialized(
-    JNIEnv* env, jclass clazz) {
-    return g_initialized;
-}
-
-// ==================== SMALI BYTECODE MAPPING REFERENCE ====================
-/*
- * This native library integrates logic from the following Smali bytecode:
- *
- * HookMain.smali (main)
- *   - Class definition, field initialization
- *   - Constants: TARGET_PACKAGE, BUNDLE_ASSET, GOLD_OVERRIDE_KEY
- *   - Video config and feature gates JSON embedded
- *   - handleLoadPackage() entry point -> triggers bundle loading
- *
- * HookMain_1.smali
- *   - Application.onCreate hook
- *   - Finds ReactNativeHost superclasses
- *   - Calls hookGetJSBundleFileOnSuperclasses()
- *
- * HookMain_2.smali
- *   - initHooks() initialization
- *   - Calls hookBundleLoading(), hookReactNativeFirebaseConfigModule()
- *   - Calls hookMMKV(), hookNetworking(), hookRevenuecat()
- *
- * HookMain_3.smali
- *   - Bundle loading and Hermes patching
- *   - getJSBundleFile() hook
- *   - Bundle SHA-1 fingerprinting
- *
- * HookMain_4.smali
- *   - Fingerprint pattern matching (Hermes bytecode)
- *   - patchUnique() implementation
- *
- * HookMain_5.smali
- *   - bytesToHex() conversion
- *   - Hex pattern matching helpers
- *
- * HookMain_6.smali
- *   - Bundle path manipulation
- *   - Cache directory creation
- *
- * HookMain_7.smali
- *   - mutateUserJsonString() - JSON mutation for subscription_entitlement
- *   - mutateUserMap() - Map-based user data mutation
- *
- * HookMain_8.smali
- *   - Firebase Remote Config injection
- *   - Video config JSON embedding
- *
- * HookMain_9.smali
- *   - Feature gates JSON injection
- *   - Config map manipulation
- *
- * HookMain_10.smali
- *   - ReactNativeFirebaseConfigModule.getConstants() hook
- *   - injectGoldConfigValues() from Smali
- *
- * HookMain_11.smali
- *   - Firestore DocumentSnapshot.getData() hook
- *   - putRemoteConfigValue() helper
- *
- * HookMain_12.smali
- *   - React Native NetworkingModule.onDataReceived() hook
- *   - Network response mutation
- *
- * HookMain_13.smali
- *   - MMKV.decodeString() hook
- *   - Cache mutation for gold subscription
- *
- * HookMain_14.smali
- *   - RevenueCat EntitlementInfo.isActive() hook
- *
- * HookMain_15.smali
- *   - RevenueCat EntitlementInfo.getWillRenew() hook
- *
- * Integration Strategy:
- * ✓ Native bytecode pattern matching (hex fingerprints)
- * ✓ JNI callbacks for Java-based data mutation
- * ✓ Dobby hooks for native-level interception
- * ✓ Fallback to pure Java if native unavailable
- */
-
-// ==================== JNI HELPER EXPORTS ====================
-
-/**
- * JNI export: Mutate user JSON from Java context
- * Allows Java hooks to leverage native mutation logic
- */
-JNIEXPORT jstring JNICALL Java_com_locket_hook_LocketHookLib_mutateUserJson(
-    JNIEnv* env, jclass clazz, jstring json_str) {
-    
-    if (!json_str) return nullptr;
-    
-    const char* json_cstr = env->GetStringUTFChars(json_str, nullptr);
-    std::string mutated = mutate_user_json_string(json_cstr);
-    env->ReleaseStringUTFChars(json_str, json_cstr);
-    
-    return env->NewStringUTF(mutated.c_str());
-}
-
-/**
- * JNI export: Get video configuration JSON
- */
-JNIEXPORT jstring JNICALL Java_com_locket_hook_LocketHookLib_getVideoConfig(
-    JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF(VIDEO_CONFIG_JSON);
-}
-
-/**
- * JNI export: Get feature gates JSON
- */
-JNIEXPORT jstring JNICALL Java_com_locket_hook_LocketHookLib_getFeatureGates(
-    JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF(FEATURE_GATES_JSON);
-}
-
