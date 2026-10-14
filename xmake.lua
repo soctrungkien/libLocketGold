@@ -2,7 +2,7 @@ set_project("LocketGold")
 set_version("1.0.0")
 
 add_rules("mode.release", "mode.debug")
-add_requires("dobby") -- Tự động tải và cấu hình Dobby hook
+add_requires("dobby", {system = false})
 
 target("LocketGold")
     set_kind("shared")
